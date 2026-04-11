@@ -69,7 +69,7 @@ Everything runs on the Pi. Nothing leaves the Pi during normal operation. The on
 
 - Raspberry Pi OS Lite (64-bit, Debian bookworm)
 - Python 3.11+ / Flask
-- Ollama + the **gemma4 family only** (`gemma4:2b`, `gemma4:4b` default, `gemma4:9b`)
+- Ollama + the **gemma4 family only** (`gemma4:2b`, `gemma4:4b`)
 - Kiwix-serve + kiwix-manage (ARM64) with `--monitorLibrary` auto-reload
 - Custom chunked resumable downloader + background scheduler (threaded)
 - systemd (two units: `ark-flask`, `ark-kiwix`)
@@ -96,7 +96,7 @@ The installer **does not download any `.zim` content** — it only prepares the 
 4. The installer will:
    - Print a large warning and require Y/N acknowledgement of `ROUTER_SETUP.md`.
    - Ask for the **SSD mount point** (e.g. `/mnt/ssd-ark`). If the path isn't yet a mountpoint it shows `lsblk`, lets you pick a device, mounts it, and optionally adds an `fstab` entry via `blkid` UUID.
-   - Ask which **gemma4 model** to pull (`gemma4:2b`, `gemma4:4b` default, `gemma4:9b`). No other families are allowed.
+   - Ask which **gemma4 model** to pull (`gemma4:2b`, `gemma4:4b`).
    - Update the OS and install dependencies.
    - Install Ollama, `kiwix-serve`, and `kiwix-manage` (ARM64).
    - Create `${MOUNT}/ark-data/{zims/,library.xml,config.json}`.
