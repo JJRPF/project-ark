@@ -1,0 +1,26 @@
+[Unit]
+Description=Project Ark — Kiwix-serve (offline Wikipedia)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@KIWIX_BIN@ --port=8080 --address=0.0.0.0 --nolibrarybutton @ZIM_PATH@
+Restart=on-failure
+RestartSec=5
+User=root
+# Resource hygiene
+Nice=5
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

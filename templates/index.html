@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="referrer" content="no-referrer">
+  <title>Project Ark — Offline Knowledge Node</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+
+    <header class="hero">
+      <div class="logo" aria-hidden="true">
+        <span class="logo-glyph">▲</span>
+      </div>
+      <h1>PROJECT <span class="accent">ARK</span></h1>
+      <p class="tagline">Offline knowledge. Local AI. No internet required.</p>
+      <p class="subtag">Model: <code>{{ model }}</code> &middot; Source: offline Wikipedia</p>
+    </header>
+
+    <section class="card" aria-labelledby="ask-heading">
+      <h2 id="ask-heading">Consult the Ark</h2>
+      <p class="hint">Ask a survival, medical, or practical question.</p>
+
+      <form id="ark-form" autocomplete="off">
+        <label for="query" class="sr-only">Your question</label>
+        <textarea id="query" name="query" rows="3"
+          placeholder="e.g. How do I purify water without fuel?"
+          maxlength="500" required></textarea>
+        <button type="submit" id="submit-btn">
+          <span class="btn-label">Consult the Ark</span>
+          <span class="btn-spinner" aria-hidden="true"></span>
+        </button>
+      </form>
+    </section>
+
+    <section id="result" class="card result hidden" aria-live="polite">
+      <h2>Response</h2>
+      <div id="answer" class="answer"></div>
+      <details id="source-details" class="source hidden">
+        <summary>Source &amp; context</summary>
+        <p><a id="source-link" href="#" target="_blank" rel="noopener">Full Wikipedia article</a></p>
+        <blockquote id="context-preview"></blockquote>
+      </details>
+    </section>
+
+    <section id="error" class="card error hidden" aria-live="assertive">
+      <h2>Signal Lost</h2>
+      <p id="error-msg"></p>
+    </section>
+
+    <footer class="foot">
+      <p>Project Ark is a fully offline emergency node.</p>
+      <p>No accounts. No tracking. No uplink.</p>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      const form     = document.getElementById('ark-form');
+      const queryEl  = document.getElementById('query');
+      const btn      = document.getElementById('submit-btn');
+      const resultEl = document.getElementById('result');
+      const answerEl = document.getElementById('answer');
+      const errorEl  = document.getElementById('error');
+      const errorMsg = document.getElementById('error-msg');
+      const srcBox   = document.getElementById('source-details');
+      const srcLink  = document.getElementById('source-link');
+      const ctxEl    = document.getElementById('context-preview');
+
+      function setLoading(on) {
+        btn.disabled = on;
+        btn.classList.toggle('loading', on);
+        queryEl.disabled = on;
+      }
+
+      function showError(msg) {
+        errorMsg.textContent = msg;
+        errorEl.classList.remove('hidden');
+        resultEl.classList.add('hidden');
+      }
+
+      function renderAnswer(text) {
+        // Minimal markdown-ish rendering: preserve bullets + line breaks
+        // without pulling in a library. Safe because we escape first.
+        const esc = (s) => s.replace(/[&<>"']/g, (c) => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;',
+          '"': '&quot;', "'": '&#39;'
+        }[c]));
+
+        const lines = esc(text).split(/\r?\n/);
+        let html = '';
+        let inList = false;
+        for (const raw of lines) {
+          const line = raw.trimEnd();
+          const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+          if (bullet) {
+            if (!inList) { html += '<ul>'; inList = true; }
+            html += '<li>' + bullet[1] + '</li>';
+          } else {
+            if (inList) { html += '</ul>'; inList = false; }
+            if (line.trim()) html += '<p>' + line + '</p>';
+          }
+        }
+        if (inList) html += '</ul>';
+        answerEl.innerHTML = html || '<p><em>(empty response)</em></p>';
+      }
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const q = queryEl.value.trim();
+        if (!q) return;
+
+        errorEl.classList.add('hidden');
+        resultEl.classList.add('hidden');
+        srcBox.classList.add('hidden');
+        answerEl.innerHTML = '';
+        setLoading(true);
+
+        try {
+          const resp = await fetch('/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q })
+          });
+          const data = await resp.json().catch(() => ({}));
+
+          if (!resp.ok || !data.ok) {
+            showError(data.error || ('Request failed (' + resp.status + ').'));
+          } else {
+            renderAnswer(data.answer);
+            if (data.source) {
+              srcLink.href = data.source;
+              srcLink.textContent = data.source;
+            }
+            if (data.context_preview) {
+              ctxEl.innerHTML = data.context_preview;
+            }
+            srcBox.classList.remove('hidden');
+            resultEl.classList.remove('hidden');
+            resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        } catch (err) {
+          showError('Could not reach the Ark. The node may be offline.');
+        } finally {
+          setLoading(false);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
