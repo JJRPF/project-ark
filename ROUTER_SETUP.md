@@ -240,7 +240,7 @@ From the Pi (SSH from the router LAN):
 |---|---|---|
 | Phone connects but no captive popup | OS captive detection disabled | Open a browser and go to `http://neverssl.com` manually. |
 | Portal times out | Pi has wrong IP / service down | `ping 192.168.1.50` from router, check `ark-flask` status. |
-| Kiwix returns 404 | Wrong ZIM name in systemd unit | `sudo systemctl edit ark-kiwix` and fix the path. |
+| Kiwix returns 404 | `library.xml` empty or stale | Open `/admin`, re-download content, or on the Pi run `ls ${ARK_DATA_DIR}/zims/` to confirm files exist. `kiwix-serve --monitorLibrary` auto-reloads. |
 | Ollama replies are empty | Model not pulled or OOM | `ollama list` on Pi; pull again; watch `dmesg` for OOM kills. |
 | Router reboots under load | PSU or thermal | Use the stock Asus PSU; add airflow. |
 

@@ -298,3 +298,279 @@ button.loading .btn-spinner { display: inline-block; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ============================================================
+   Admin dashboard (admin.html) — reuses the core palette above.
+   ============================================================ */
+
+.navlink {
+  color: var(--accent-2);
+  text-decoration: none;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.navlink:hover { text-decoration: underline; }
+
+.muted { color: var(--text-dim); }
+
+.hint.error-inline {
+  color: #ffbcbc;
+  background: rgba(255, 85, 85, 0.08);
+  border: 1px solid rgba(255, 85, 85, 0.35);
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.error-inline {
+  color: #ffbcbc;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* ---------- Storage ---------- */
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.storage-summary > div {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.storage-summary strong {
+  display: block;
+  font-size: 18px;
+  color: var(--accent-2);
+  margin-bottom: 2px;
+}
+
+.storage-summary span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- Bars ---------- */
+.bar {
+  position: relative;
+  height: 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 0;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
+  transition: width 300ms ease;
+}
+
+.bar-fill.bar-warn   { background: linear-gradient(90deg, #ffb066, #ffd37a); }
+.bar-fill.bar-danger { background: linear-gradient(90deg, #ff5555, #ff9090); }
+
+/* ---------- Resource cards ---------- */
+.resource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.resource {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 14px;
+}
+
+.resource-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.resource h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.resource p {
+  margin: 2px 0;
+  font-size: 13px;
+}
+
+.resource .meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  margin-top: 6px;
+  font-family: var(--mono);
+}
+
+.resource .meta code {
+  background: rgba(255, 122, 26, 0.08);
+  color: var(--accent-2);
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.tag {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.resource-action {
+  flex-shrink: 0;
+  min-width: 120px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.resource-action button {
+  padding: 10px 14px;
+  font-size: 13px;
+  min-height: 40px;
+  width: 100%;
+}
+
+/* Primary + ghost button variants */
+.btn-primary {
+  background: var(--accent);
+  color: #1a0e00;
+  border: none;
+  border-radius: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-2); }
+.btn-primary:disabled {
+  background: #3a2a18;
+  color: #8a6a40;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--accent-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---------- Badges ---------- */
+.badge {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.badge-ok    { background: rgba(102, 224, 138, 0.15); color: var(--ok);    border: 1px solid rgba(102, 224, 138, 0.4); }
+.badge-live  { background: rgba(255, 122, 26, 0.18);  color: var(--accent-2); border: 1px solid rgba(255, 122, 26, 0.5); }
+.badge-warn  { background: rgba(255, 179, 0, 0.15);   color: #ffd37a;     border: 1px solid rgba(255, 179, 0, 0.4); }
+.badge-error { background: rgba(255, 85, 85, 0.15);   color: var(--danger); border: 1px solid rgba(255, 85, 85, 0.4); }
+
+/* ---------- Progress under a resource ---------- */
+.progress {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.progress-meta {
+  font-size: 11px;
+  margin-top: 4px;
+  font-family: var(--mono);
+}
+
+/* ---------- Config form ---------- */
+#config-form label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+#config-form .row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+#config-form input[type="number"] {
+  width: 100px;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+}
+#config-form input[type="number"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 122, 26, 0.2);
+}
+
+#config-form .suffix {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.btn-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.btn-row button {
+  flex: 1;
+  padding: 12px 14px;
+  font-size: 13px;
+  min-height: 44px;
+}
+
+/* Wider screens: resource meta lays out more comfortably */
+@media (min-width: 640px) {
+  .resource-head { align-items: center; }
+  .resource-action { min-width: 140px; }
+}

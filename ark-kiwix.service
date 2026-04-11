@@ -5,7 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=@KIWIX_BIN@ --port=8080 --address=0.0.0.0 --nolibrarybutton @ZIM_PATH@
+# Serve every book listed in library.xml and auto-reload whenever Flask
+# adds/removes entries (via kiwix-manage). This way any .zim dropped into
+# the SSD's zims/ directory is published without restarting the service.
+ExecStart=@KIWIX_BIN@ --port=8080 --address=0.0.0.0 --nolibrarybutton --library --monitorLibrary @LIBRARY_XML@
 Restart=on-failure
 RestartSec=5
 User=root

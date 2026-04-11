@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="referrer" content="no-referrer">
+  <title>Project Ark — Admin</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+
+    <header class="hero">
+      <div class="logo" aria-hidden="true">
+        <span class="logo-glyph">⚙</span>
+      </div>
+      <h1>ARK <span class="accent">ADMIN</span></h1>
+      <p class="tagline">Content management &amp; auto-update control center</p>
+      <p class="subtag">
+        Model: <code>{{ model }}</code> &middot; Data: <code>{{ data_dir }}</code> &middot;
+        <a href="/" class="navlink">&larr; portal</a>
+      </p>
+    </header>
+
+    <!-- ============ Storage ============ -->
+    <section class="card" aria-labelledby="storage-heading">
+      <h2 id="storage-heading">Storage Matrix</h2>
+      <div id="storage-unavailable" class="hint error-inline hidden">
+        SSD not mounted at the expected path. Fix the mount and reload.
+      </div>
+      <div id="storage-block">
+        <div class="storage-summary">
+          <div>
+            <strong id="storage-free">— GB</strong>
+            <span class="muted">free</span>
+          </div>
+          <div>
+            <strong id="storage-used">— GB</strong>
+            <span class="muted">used</span>
+          </div>
+          <div>
+            <strong id="storage-total">— GB</strong>
+            <span class="muted">total</span>
+          </div>
+        </div>
+        <div class="bar" aria-hidden="true">
+          <div class="bar-fill" id="storage-bar"></div>
+        </div>
+        <p class="hint muted" id="storage-recs">
+          Loading recommendations…
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ Resource catalog ============ -->
+    <section class="card" aria-labelledby="resource-heading">
+      <h2 id="resource-heading">Resource Library</h2>
+      <p class="hint">
+        Download curated offline content to the SSD. The Pi must have
+        temporary internet access for initial downloads. Large transfers
+        can be paused any time — they resume from where they left off.
+      </p>
+      <div id="resource-list" class="resource-list">
+        <p class="muted">Loading catalog…</p>
+      </div>
+    </section>
+
+    <!-- ============ Auto-update config ============ -->
+    <section class="card" aria-labelledby="config-heading">
+      <h2 id="config-heading">Auto-Update Config</h2>
+      <p class="hint">
+        Periodically check the Kiwix catalog for newer versions of any
+        content you've already downloaded, and quietly replace them in
+        the background.
+      </p>
+      <form id="config-form" autocomplete="off">
+        <label for="interval-weeks">Check for updates every</label>
+        <div class="row">
+          <input id="interval-weeks" name="interval-weeks"
+                 type="number" min="0" max="104" value="0"
+                 inputmode="numeric">
+          <span class="suffix">week(s)</span>
+        </div>
+        <p class="hint muted">
+          Set to <code>0</code> to disable. Values up to 104 weeks allowed.
+        </p>
+        <div class="btn-row">
+          <button type="submit" class="btn-primary">
+            <span class="btn-label">Save Config</span>
+          </button>
+          <button type="button" id="check-now-btn" class="btn-ghost">
+            <span class="btn-label">Check Now</span>
+          </button>
+        </div>
+        <p id="config-status" class="hint muted" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <footer class="foot">
+      <p>Project Ark admin — all config stored in <code>config.json</code> on the SSD.</p>
+    </footer>
+  </main>
+
+  <script>
+  (function () {
+    const $ = (id) => document.getElementById(id);
+
+    const fmtGB = (bytes) => (bytes / 1e9).toFixed(1) + ' GB';
+    const fmtPct = (d, t) => (!t ? 0 : Math.round((d / t) * 100));
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    // ---------- Storage ----------
+    async function refreshStorage() {
+      try {
+        const r = await fetch('/api/storage');
+        const s = await r.json();
+        if (!s.available) {
+          $('storage-unavailable').classList.remove('hidden');
+          $('storage-block').classList.add('hidden');
+          return null;
+        }
+        $('storage-free').textContent  = fmtGB(s.free);
+        $('storage-used').textContent  = fmtGB(s.used);
+        $('storage-total').textContent = fmtGB(s.total);
+        $('storage-bar').style.width = s.used_pct + '%';
+        $('storage-bar').classList.toggle('bar-warn',   s.used_pct >= 75);
+        $('storage-bar').classList.toggle('bar-danger', s.used_pct >= 90);
+        return s;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function recommendFor(freeGB) {
+      // Suggest realistic combinations of content that fit in the free space.
+      if (freeGB >= 200) {
+        return 'Room for the full Wikipedia + Project Gutenberg + WikiHow + iFixit + WikiMed.';
+      } else if (freeGB >= 130) {
+        return 'Recommended: Wikipedia (full) + WikiHow + iFixit + WikiMed. Gutenberg won\'t fit.';
+      } else if (freeGB >= 110) {
+        return 'Recommended: Wikipedia (full) + WikiMed + iFixit. Skip Gutenberg / WikiHow.';
+      } else if (freeGB >= 95) {
+        return 'Tight fit: Wikipedia (full) only. Free up space before adding more.';
+      } else if (freeGB >= 85) {
+        return 'Recommended: Project Gutenberg + WikiMed + iFixit + WikiHow. Skip full Wikipedia.';
+      } else if (freeGB >= 25) {
+        return 'Recommended: WikiMed + iFixit + WikiHow (compact survival set).';
+      } else if (freeGB >= 10) {
+        return 'Recommended: WikiMed + iFixit. Larger content won\'t fit.';
+      } else if (freeGB >= 5) {
+        return 'Recommended: WikiMed only. Nearly full — free up space.';
+      }
+      return 'Not enough free space for any curated bundle. Free up the SSD.';
+    }
+
+    // ---------- Resources ----------
+    function statusBadge(res) {
+      const st = res.download_state;
+      if (st && st.status === 'downloading') return `<span class="badge badge-live">downloading</span>`;
+      if (st && st.status === 'starting')    return `<span class="badge badge-live">starting</span>`;
+      if (st && st.status === 'paused')      return `<span class="badge badge-warn">paused</span>`;
+      if (st && st.status === 'error')       return `<span class="badge badge-error">error</span>`;
+      if (res.downloaded)                    return `<span class="badge badge-ok">installed</span>`;
+      return '';
+    }
+
+    function buttonFor(res) {
+      const st = res.download_state || {};
+      if (st.status === 'downloading' || st.status === 'starting') {
+        return `<button class="btn-ghost" disabled>Downloading…</button>`;
+      }
+      if (res.downloaded && st.status !== 'error') {
+        return `<button class="btn-ghost" disabled>Installed</button>`;
+      }
+      if (!res.fits_on_disk) {
+        return `<button class="btn-primary" disabled title="Not enough free space">Too Large</button>`;
+      }
+      const label = (st.status === 'error' || st.status === 'paused') ? 'Resume' : 'Download';
+      return `<button class="btn-primary" data-download="${esc(res.id)}">${label}</button>`;
+    }
+
+    function progressFor(res) {
+      const st = res.download_state;
+      if (!st) return '';
+      if (st.status === 'completed') return '';
+      const pct = fmtPct(st.downloaded || 0, st.total || 0);
+      const dlGB = ((st.downloaded || 0) / 1e9).toFixed(2);
+      const totGB = ((st.total || 0) / 1e9).toFixed(2);
+      const errLine = st.error
+        ? `<div class="error-inline">${esc(st.error)}</div>`
+        : '';
+      return `
+        <div class="progress">
+          <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+          <div class="progress-meta muted">${dlGB} / ${totGB} GB &middot; ${pct}%</div>
+          ${errLine}
+        </div>`;
+    }
+
+    function renderResources(data) {
+      const wrap = $('resource-list');
+      wrap.innerHTML = '';
+      for (const res of data.resources) {
+        const card = document.createElement('div');
+        card.className = 'resource';
+        card.innerHTML = `
+          <div class="resource-head">
+            <div>
+              <h3>${esc(res.name)} ${statusBadge(res)}</h3>
+              <p class="muted">${esc(res.description)}</p>
+              <p class="meta muted">
+                <span class="tag">${esc(res.category)}</span>
+                <span>${res.approx_size_gb} GB</span>
+                <span><code>${esc(res.kiwix_name)}</code></span>
+              </p>
+            </div>
+            <div class="resource-action">
+              ${buttonFor(res)}
+            </div>
+          </div>
+          ${progressFor(res)}
+        `;
+        wrap.appendChild(card);
+      }
+    }
+
+    async function refreshResources() {
+      try {
+        const r = await fetch('/api/resources');
+        const data = await r.json();
+        renderResources(data);
+        if (data.storage && data.storage.available) {
+          $('storage-recs').textContent = recommendFor(data.storage.free_gb);
+        }
+      } catch (e) { /* ignore transient */ }
+    }
+
+    // ---------- Download action delegation ----------
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-download]');
+      if (!btn) return;
+      const id = btn.getAttribute('data-download');
+      btn.disabled = true;
+      btn.textContent = 'Starting…';
+      try {
+        const r = await fetch('/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          alert(data.error || 'Could not start download.');
+          btn.disabled = false;
+          btn.textContent = 'Download';
+        }
+      } catch (err) {
+        alert('Network error starting download.');
+        btn.disabled = false;
+        btn.textContent = 'Download';
+      }
+      refreshResources();
+    });
+
+    // ---------- Config form ----------
+    async function loadConfig() {
+      try {
+        const r = await fetch('/api/config');
+        const cfg = await r.json();
+        $('interval-weeks').value = cfg.update_interval_weeks || 0;
+      } catch (e) { /* ignore */ }
+    }
+
+    $('config-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const weeks = parseInt($('interval-weeks').value, 10) || 0;
+      $('config-status').textContent = 'Saving…';
+      try {
+        const r = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ update_interval_weeks: weeks })
+        });
+        const data = await r.json();
+        $('config-status').textContent = data.ok
+          ? ('Saved. ' + (weeks ? `Checking every ${weeks} week(s).` : 'Auto-updates disabled.'))
+          : ('Error: ' + (data.error || 'unknown'));
+      } catch (err) {
+        $('config-status').textContent = 'Network error while saving.';
+      }
+    });
+
+    $('check-now-btn').addEventListener('click', async () => {
+      $('config-status').textContent = 'Running update check…';
+      try {
+        const r = await fetch('/api/check-updates', { method: 'POST' });
+        const data = await r.json();
+        $('config-status').textContent = data.ok
+          ? 'Update check started — watch the resource cards for progress.'
+          : 'Could not start update check.';
+        refreshResources();
+      } catch (e) {
+        $('config-status').textContent = 'Network error while starting update check.';
+      }
+    });
+
+    // ---------- Boot + polling ----------
+    async function tick() {
+      await refreshStorage();
+      await refreshResources();
+    }
+    loadConfig();
+    tick();
+    setInterval(tick, 2000);
+  })();
+  </script>
+</body>
+</html>

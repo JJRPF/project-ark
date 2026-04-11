@@ -11,6 +11,7 @@ Environment=ARK_OLLAMA_MODEL=@OLLAMA_MODEL@
 Environment=ARK_OLLAMA_URL=http://127.0.0.1:11434
 Environment=ARK_KIWIX_URL=http://127.0.0.1:8080
 Environment=ARK_PORT=80
+Environment=ARK_DATA_DIR=@ARK_DATA_DIR@
 Environment=PYTHONUNBUFFERED=1
 ExecStart=@VENV_DIR@/bin/python @ARK_DIR@/app.py
 Restart=on-failure

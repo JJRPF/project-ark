@@ -31,6 +31,7 @@ ARK_DIR="${INSTALL_HOME}/project-ark"
 VENV_DIR="${ARK_DIR}/venv"
 KIWIX_DIR="/opt/kiwix"
 KIWIX_BIN="${KIWIX_DIR}/kiwix-serve"
+KIWIX_MANAGE_BIN="${KIWIX_DIR}/kiwix-manage"
 KIWIX_VERSION="3.7.0-2"
 KIWIX_TARBALL="kiwix-tools_linux-aarch64-${KIWIX_VERSION}.tar.gz"
 KIWIX_URL="https://download.kiwix.org/release/kiwix-tools/${KIWIX_TARBALL}"
@@ -93,30 +94,75 @@ esac
 
 echo
 
-# ---------- Interactive: SSD path ----------
-echo -e "${BOLD}[1/2] External SSD / Wikipedia ZIM path${NC}"
-echo "Enter the ABSOLUTE path to your offline Wikipedia .zim file."
-echo "Example: /mnt/ssd/wikipedia_en_all_maxi_2024-01.zim"
-read -rp "ZIM path: " ZIM_PATH
+# ---------- Interactive: SSD mount point ----------
+echo -e "${BOLD}[1/2] External SSD mount point${NC}"
+echo "Project Ark stores every .zim file, library.xml, and config.json on an"
+echo "external SSD. You will download and manage .zim files from the web-based"
+echo "admin panel AFTER installation — this script does NOT download content."
+echo
+echo "Enter the ABSOLUTE path where your SSD is (or will be) mounted."
+echo "Example: /mnt/ssd-ark"
+read -rp "SSD mount point: " ARK_MOUNT
 
-if [[ -z "${ZIM_PATH}" ]]; then
-    die "ZIM path cannot be empty."
+if [[ -z "${ARK_MOUNT}" ]]; then
+    die "SSD mount point cannot be empty."
 fi
-if [[ ! -f "${ZIM_PATH}" ]]; then
-    warn "File '${ZIM_PATH}' does not exist yet."
-    read -rp "Continue anyway? (service will fail until the file exists) [y/N]: " cont
-    [[ "${cont,,}" == "y" ]] || die "Aborting — mount the SSD and re-run."
+
+# Verify it's a real mountpoint — if not, offer to mount it interactively.
+if ! mountpoint -q "${ARK_MOUNT}" 2>/dev/null; then
+    warn "'${ARK_MOUNT}' is not currently a mountpoint."
+    echo
+    echo "Detected block devices:"
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,UUID | sed 's/^/  /'
+    echo
+    read -rp "Attempt to mount a device at ${ARK_MOUNT} now? [y/N]: " do_mount
+    if [[ "${do_mount,,}" == "y" ]]; then
+        read -rp "Device to mount (e.g. /dev/sda1): " ARK_DEV
+        [[ -b "${ARK_DEV}" ]] || die "'${ARK_DEV}' is not a block device."
+        mkdir -p "${ARK_MOUNT}"
+        mount "${ARK_DEV}" "${ARK_MOUNT}" || die "Failed to mount ${ARK_DEV}."
+        ok "Mounted ${ARK_DEV} at ${ARK_MOUNT}"
+
+        read -rp "Add an /etc/fstab entry so it auto-mounts on boot? [y/N]: " do_fstab
+        if [[ "${do_fstab,,}" == "y" ]]; then
+            ARK_UUID="$(blkid -s UUID -o value "${ARK_DEV}" || true)"
+            ARK_FSTYPE="$(blkid -s TYPE -o value "${ARK_DEV}" || true)"
+            if [[ -n "${ARK_UUID}" && -n "${ARK_FSTYPE}" ]]; then
+                if ! grep -q "${ARK_UUID}" /etc/fstab; then
+                    echo "UUID=${ARK_UUID} ${ARK_MOUNT} ${ARK_FSTYPE} defaults,nofail 0 2" >> /etc/fstab
+                    ok "Added fstab entry for UUID=${ARK_UUID}"
+                else
+                    warn "fstab already contains an entry for this UUID — skipping."
+                fi
+            else
+                warn "Could not read UUID/FSTYPE for ${ARK_DEV} — skipping fstab."
+            fi
+        fi
+    else
+        die "Mount the SSD at ${ARK_MOUNT} and re-run this installer."
+    fi
 fi
-ok "Using ZIM: ${ZIM_PATH}"
+
+# Directories / files we will manage on the SSD.
+ARK_DATA_DIR="${ARK_MOUNT}/ark-data"
+ZIM_DIR="${ARK_DATA_DIR}/zims"
+LIBRARY_XML="${ARK_DATA_DIR}/library.xml"
+CONFIG_JSON="${ARK_DATA_DIR}/config.json"
+
+mkdir -p "${ZIM_DIR}"
+ok "Ark data directory: ${ARK_DATA_DIR}"
 echo
 
 # ---------- Interactive: Model choice ----------
 echo -e "${BOLD}[2/2] Select Ollama model${NC}"
-echo "  1) gemma4:4b   (default — small, fast, Pi 5 friendly)"
-echo "  2) llama3:8b   (larger, slower, better reasoning)"
-read -rp "Choice [1]: " model_choice
+echo "Project Ark restricts model selection to the gemma4 family."
+echo "  1) gemma4:2b   (tiny — fastest, lowest RAM)"
+echo "  2) gemma4:4b   (default — balanced, recommended for Pi 5 8GB)"
+echo "  3) gemma4:9b   (largest — best reasoning, slowest)"
+read -rp "Choice [2]: " model_choice
 case "${model_choice}" in
-    2) OLLAMA_MODEL="llama3:8b" ;;
+    1) OLLAMA_MODEL="gemma4:2b" ;;
+    3) OLLAMA_MODEL="gemma4:9b" ;;
     *) OLLAMA_MODEL="gemma4:4b" ;;
 esac
 ok "Using model: ${OLLAMA_MODEL}"
@@ -126,7 +172,8 @@ echo
 echo -e "${BOLD}Summary:${NC}"
 echo "  Install user : ${INSTALL_USER}"
 echo "  Ark dir      : ${ARK_DIR}"
-echo "  ZIM file     : ${ZIM_PATH}"
+echo "  SSD mount    : ${ARK_MOUNT}"
+echo "  Data dir     : ${ARK_DATA_DIR}"
 echo "  Ollama model : ${OLLAMA_MODEL}"
 echo
 read -rp "Proceed with installation? [Y/n]: " go
@@ -172,14 +219,38 @@ if [[ ! -x "${KIWIX_BIN}" ]]; then
     wget -q --show-progress "${KIWIX_URL}" -O "${KIWIX_TARBALL}" || \
         die "Failed to download Kiwix tools from ${KIWIX_URL}"
     tar -xzf "${KIWIX_TARBALL}"
-    cp kiwix-tools_linux-aarch64-*/kiwix-serve "${KIWIX_BIN}"
-    chmod +x "${KIWIX_BIN}"
+    cp kiwix-tools_linux-aarch64-*/kiwix-serve  "${KIWIX_BIN}"
+    cp kiwix-tools_linux-aarch64-*/kiwix-manage "${KIWIX_MANAGE_BIN}"
+    chmod +x "${KIWIX_BIN}" "${KIWIX_MANAGE_BIN}"
     popd >/dev/null
     rm -rf "${tmp}"
-    ok "Kiwix-serve installed at ${KIWIX_BIN}"
+    ok "Kiwix-serve + kiwix-manage installed at ${KIWIX_DIR}"
 else
     ok "Kiwix-serve already installed."
+    # Belt-and-braces: make sure kiwix-manage is there too.
+    if [[ ! -x "${KIWIX_MANAGE_BIN}" ]]; then
+        warn "kiwix-manage missing — re-extracting."
+        tmp="$(mktemp -d)"
+        pushd "${tmp}" >/dev/null
+        wget -q "${KIWIX_URL}" -O "${KIWIX_TARBALL}"
+        tar -xzf "${KIWIX_TARBALL}"
+        cp kiwix-tools_linux-aarch64-*/kiwix-manage "${KIWIX_MANAGE_BIN}"
+        chmod +x "${KIWIX_MANAGE_BIN}"
+        popd >/dev/null
+        rm -rf "${tmp}"
+    fi
 fi
+
+# Initialize an empty library.xml on the SSD if one isn't there yet.
+# kiwix-serve will monitor this file and auto-reload when Flask adds books.
+if [[ ! -f "${LIBRARY_XML}" ]]; then
+    cat > "${LIBRARY_XML}" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<library version="20110515"></library>
+XML
+    ok "Initialized empty library.xml at ${LIBRARY_XML}"
+fi
+chown -R "${INSTALL_USER}:${INSTALL_USER}" "${ARK_DATA_DIR}"
 
 # ---------- Python venv & app deployment ----------
 log "Staging application files into ${ARK_DIR}..."
@@ -205,17 +276,18 @@ setcap 'cap_net_bind_service=+ep' "${VENV_PY}" || \
 # ---------- systemd units ----------
 log "Installing systemd unit files..."
 
-# ark-kiwix.service — templated with ZIM path
+# ark-kiwix.service — templated with library.xml + binary path
 sed \
-    -e "s|@ZIM_PATH@|${ZIM_PATH}|g" \
+    -e "s|@LIBRARY_XML@|${LIBRARY_XML}|g" \
     -e "s|@KIWIX_BIN@|${KIWIX_BIN}|g" \
     "${SCRIPT_DIR}/ark-kiwix.service" > /etc/systemd/system/ark-kiwix.service
 
-# ark-flask.service — templated with user & paths
+# ark-flask.service — templated with user & paths (includes ARK_DATA_DIR)
 sed \
     -e "s|@INSTALL_USER@|${INSTALL_USER}|g" \
     -e "s|@ARK_DIR@|${ARK_DIR}|g" \
     -e "s|@VENV_DIR@|${VENV_DIR}|g" \
+    -e "s|@ARK_DATA_DIR@|${ARK_DATA_DIR}|g" \
     -e "s|@OLLAMA_MODEL@|${OLLAMA_MODEL}|g" \
     "${SCRIPT_DIR}/ark-flask.service" > /etc/systemd/system/ark-flask.service
 
@@ -243,14 +315,19 @@ cat <<SUCCESS
 ================================================================
 
   Kiwix-serve  : http://${IP_ADDR}:8080
-  Flask portal : http://${IP_ADDR}/       (port 80)
+  Flask portal : http://${IP_ADDR}/           (port 80)
+  Admin panel  : http://${IP_ADDR}/admin      (download content here)
   Model        : ${OLLAMA_MODEL}
+  Data dir     : ${ARK_DATA_DIR}
 
   Next steps:
-    1. Configure your Asus captive portal router to redirect all
+    1. Temporarily connect this Pi to the internet and open the
+       admin panel to download ZIM resources (Wikipedia, WikiMed,
+       iFixit, WikiHow, Gutenberg, ...) onto the SSD.
+    2. Configure your Asus captive portal router to redirect all
        HTTP traffic to http://${IP_ADDR}/  (see ROUTER_SETUP.md).
-    2. Set this Pi to a STATIC IP matching the router's redirect.
-    3. Connect a client device — you should be captured into Ark.
+    3. Set this Pi to a STATIC IP matching the router's redirect.
+    4. Disconnect from the internet — Ark is now fully offline.
 
   Useful commands:
     sudo systemctl status ark-flask
