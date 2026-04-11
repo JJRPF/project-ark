@@ -88,7 +88,8 @@ The installer **does not download any `.zim` content** — it only prepares the 
 2. **Attach your external SSD** to the Pi (formatted, empty is fine). The installer can mount it for you and optionally add an `fstab` entry.
 3. **Clone** this repo onto the Pi:
    ```bash
-   git clone https://github.com/<you>/project-ark.git
+   sudo apt install git
+   git clone https://github.com/JJRPF/project-ark.git
    cd project-ark
    chmod +x install.sh
    sudo ./install.sh
