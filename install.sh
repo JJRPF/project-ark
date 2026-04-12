@@ -48,7 +48,9 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 # ---------- Pre-flight banner ----------
-clear
+# Use a raw ANSI clear instead of `clear`, which reads terminfo and fails
+# under unknown TERM values (e.g. xterm-ghostty on a fresh Pi OS Lite image).
+printf '\033[2J\033[H'
 cat <<'BANNER'
 
   ____            _           _       _         _
@@ -158,11 +160,9 @@ echo -e "${BOLD}[2/2] Select Ollama model${NC}"
 echo "Project Ark restricts model selection to the gemma4 family."
 echo "  1) gemma4:2b   (tiny — fastest, lowest RAM)"
 echo "  2) gemma4:4b   (default — balanced, recommended for Pi 5 8GB)"
-echo "  3) gemma4:9b   (largest — best reasoning, slowest)"
 read -rp "Choice [2]: " model_choice
 case "${model_choice}" in
     1) OLLAMA_MODEL="gemma4:2b" ;;
-    3) OLLAMA_MODEL="gemma4:9b" ;;
     *) OLLAMA_MODEL="gemma4:4b" ;;
 esac
 ok "Using model: ${OLLAMA_MODEL}"
