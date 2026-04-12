@@ -506,8 +506,11 @@ def _scheduler_loop() -> None:
 
 
 def _shutdown_handler(signum: int, frame: Any) -> None:  # noqa: ARG001
-    log.info("Signal %s received — asking workers to stop.", signum)
+    log.info("Signal %s received — shutting down.", signum)
     _stop_event.set()
+    # Re-raise with default handler so the process actually exits.
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
 
 
 # ======================================================================
