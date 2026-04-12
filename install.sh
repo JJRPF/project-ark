@@ -96,57 +96,73 @@ esac
 
 echo
 
-# ---------- Interactive: SSD mount point ----------
-echo -e "${BOLD}[1/2] External SSD mount point${NC}"
-echo "Project Ark stores every .zim file, library.xml, and config.json on an"
-echo "external SSD. You will download and manage .zim files from the web-based"
-echo "admin panel AFTER installation — this script does NOT download content."
+# ---------- Interactive: Storage location ----------
+echo -e "${BOLD}[1/2] Storage location${NC}"
+echo "Project Ark stores .zim files, library.xml, and config.json in a data"
+echo "directory. You will download content from the /admin panel AFTER install."
 echo
-echo "Enter the ABSOLUTE path where your SSD is (or will be) mounted."
-echo "Example: /mnt/ssd-ark"
-read -rp "SSD mount point: " ARK_MOUNT
+echo "Where should Ark store its data?"
+echo "  1) External SSD  (recommended — room for full Wikipedia ~100 GB)"
+echo "  2) Boot SD card   (simpler — only small content like WikiMed fits)"
+read -rp "Choice [1]: " storage_choice
 
-if [[ -z "${ARK_MOUNT}" ]]; then
-    die "SSD mount point cannot be empty."
-fi
+case "${storage_choice}" in
+    2)
+        # ---------- SD card path ----------
+        ARK_DATA_DIR="${INSTALL_HOME}/ark-data"
+        warn "Using the boot SD card at ${ARK_DATA_DIR}."
+        warn "Space is limited — large resources like Wikipedia Maxi won't fit."
+        ;;
+    *)
+        # ---------- External SSD ----------
+        echo
+        echo "Enter the ABSOLUTE path where your SSD is (or will be) mounted."
+        echo "Example: /mnt/ssd-ark"
+        read -rp "SSD mount point: " ARK_MOUNT
 
-# Verify it's a real mountpoint — if not, offer to mount it interactively.
-if ! mountpoint -q "${ARK_MOUNT}" 2>/dev/null; then
-    warn "'${ARK_MOUNT}' is not currently a mountpoint."
-    echo
-    echo "Detected block devices:"
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,UUID | sed 's/^/  /'
-    echo
-    read -rp "Attempt to mount a device at ${ARK_MOUNT} now? [y/N]: " do_mount
-    if [[ "${do_mount,,}" == "y" ]]; then
-        read -rp "Device to mount (e.g. /dev/sda1): " ARK_DEV
-        [[ -b "${ARK_DEV}" ]] || die "'${ARK_DEV}' is not a block device."
-        mkdir -p "${ARK_MOUNT}"
-        mount "${ARK_DEV}" "${ARK_MOUNT}" || die "Failed to mount ${ARK_DEV}."
-        ok "Mounted ${ARK_DEV} at ${ARK_MOUNT}"
+        if [[ -z "${ARK_MOUNT}" ]]; then
+            die "SSD mount point cannot be empty."
+        fi
 
-        read -rp "Add an /etc/fstab entry so it auto-mounts on boot? [y/N]: " do_fstab
-        if [[ "${do_fstab,,}" == "y" ]]; then
-            ARK_UUID="$(blkid -s UUID -o value "${ARK_DEV}" || true)"
-            ARK_FSTYPE="$(blkid -s TYPE -o value "${ARK_DEV}" || true)"
-            if [[ -n "${ARK_UUID}" && -n "${ARK_FSTYPE}" ]]; then
-                if ! grep -q "${ARK_UUID}" /etc/fstab; then
-                    echo "UUID=${ARK_UUID} ${ARK_MOUNT} ${ARK_FSTYPE} defaults,nofail 0 2" >> /etc/fstab
-                    ok "Added fstab entry for UUID=${ARK_UUID}"
-                else
-                    warn "fstab already contains an entry for this UUID — skipping."
+        # Verify it's a real mountpoint — if not, offer to mount it interactively.
+        if ! mountpoint -q "${ARK_MOUNT}" 2>/dev/null; then
+            warn "'${ARK_MOUNT}' is not currently a mountpoint."
+            echo
+            echo "Detected block devices:"
+            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,UUID | sed 's/^/  /'
+            echo
+            read -rp "Attempt to mount a device at ${ARK_MOUNT} now? [y/N]: " do_mount
+            if [[ "${do_mount,,}" == "y" ]]; then
+                read -rp "Device to mount (e.g. /dev/sda1): " ARK_DEV
+                [[ -b "${ARK_DEV}" ]] || die "'${ARK_DEV}' is not a block device."
+                mkdir -p "${ARK_MOUNT}"
+                mount "${ARK_DEV}" "${ARK_MOUNT}" || die "Failed to mount ${ARK_DEV}."
+                ok "Mounted ${ARK_DEV} at ${ARK_MOUNT}"
+
+                read -rp "Add an /etc/fstab entry so it auto-mounts on boot? [y/N]: " do_fstab
+                if [[ "${do_fstab,,}" == "y" ]]; then
+                    ARK_UUID="$(blkid -s UUID -o value "${ARK_DEV}" || true)"
+                    ARK_FSTYPE="$(blkid -s TYPE -o value "${ARK_DEV}" || true)"
+                    if [[ -n "${ARK_UUID}" && -n "${ARK_FSTYPE}" ]]; then
+                        if ! grep -q "${ARK_UUID}" /etc/fstab; then
+                            echo "UUID=${ARK_UUID} ${ARK_MOUNT} ${ARK_FSTYPE} defaults,nofail 0 2" >> /etc/fstab
+                            ok "Added fstab entry for UUID=${ARK_UUID}"
+                        else
+                            warn "fstab already contains an entry for this UUID — skipping."
+                        fi
+                    else
+                        warn "Could not read UUID/FSTYPE for ${ARK_DEV} — skipping fstab."
+                    fi
                 fi
             else
-                warn "Could not read UUID/FSTYPE for ${ARK_DEV} — skipping fstab."
+                die "Mount the SSD at ${ARK_MOUNT} and re-run this installer."
             fi
         fi
-    else
-        die "Mount the SSD at ${ARK_MOUNT} and re-run this installer."
-    fi
-fi
+        ARK_DATA_DIR="${ARK_MOUNT}/ark-data"
+        ;;
+esac
 
-# Directories / files we will manage on the SSD.
-ARK_DATA_DIR="${ARK_MOUNT}/ark-data"
+# Directories / files we will manage in the data directory.
 ZIM_DIR="${ARK_DATA_DIR}/zims"
 LIBRARY_XML="${ARK_DATA_DIR}/library.xml"
 CONFIG_JSON="${ARK_DATA_DIR}/config.json"
@@ -172,8 +188,8 @@ echo
 echo -e "${BOLD}Summary:${NC}"
 echo "  Install user : ${INSTALL_USER}"
 echo "  Ark dir      : ${ARK_DIR}"
-echo "  SSD mount    : ${ARK_MOUNT}"
 echo "  Data dir     : ${ARK_DATA_DIR}"
+echo "  Storage      : ${ARK_MOUNT:-boot SD card}"
 echo "  Ollama model : ${OLLAMA_MODEL}"
 echo
 read -rp "Proceed with installation? [Y/n]: " go
@@ -323,7 +339,7 @@ cat <<SUCCESS
   Next steps:
     1. Temporarily connect this Pi to the internet and open the
        admin panel to download ZIM resources (Wikipedia, WikiMed,
-       iFixit, WikiHow, Gutenberg, ...) onto the SSD.
+       iFixit, WikiHow, Gutenberg, ...) to the data directory.
     2. Configure your Asus captive portal router to redirect all
        HTTP traffic to http://${IP_ADDR}/  (see ROUTER_SETUP.md).
     3. Set this Pi to a STATIC IP matching the router's redirect.

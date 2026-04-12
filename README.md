@@ -1,5 +1,7 @@
 # Project Ark
 
+[![GitHub](https://img.shields.io/badge/GitHub-JJRPF%2Fproject--ark-181717?logo=github)](https://github.com/JJRPF/project-ark)
+
 > *Because when the grid fails, deploying an automated Wikipedia + AI captive portal via a single curl command is the ultimate flex.*
 
 Project Ark is a **completely offline, battery-powered community emergency network node** built on a Raspberry Pi 5. It pairs a curated library of offline knowledge (Wikipedia, WikiMed, iFixit, WikiHow, Project Gutenberg — served by Kiwix) with a local Large Language Model (served by Ollama) to answer survival, medical, and practical questions for anyone who connects to its open Wi-Fi network — no internet, no cloud, no accounts.
@@ -24,7 +26,7 @@ Connecting clients are automatically captured into a dark-mode, mobile-first web
                                     │  • Flask /admin      :80       │
                                     │  • Kiwix-serve       :8080     │
                                     │  • Ollama (local)    :11434    │
-                                    │  • External SSD                │
+                                    │  • External SSD or SD card     │
                                     │      └─ ark-data/              │
                                     │         ├─ zims/*.zim          │
                                     │         ├─ library.xml         │
@@ -56,9 +58,9 @@ Everything runs on the Pi. Nothing leaves the Pi during normal operation. The on
 
 | Component | Notes |
 |---|---|
-| **Raspberry Pi 5 (8 GB)** | Required. 4 GB will struggle with `gemma4:9b`. |
+| **Raspberry Pi 5 (8 GB)** | Required. 4 GB may OOM during LLM inference. |
 | **Active cooling (fan + heatsink)** | LLM inference will thermal throttle otherwise. |
-| **External USB 3.0 SSD (≥ 256 GB)** | Holds all `.zim` files. English Wikipedia Maxi alone is ~100 GB; budget more if adding Gutenberg (~72 GB) or WikiHow (~12 GB). |
+| **External USB 3.0 SSD (≥ 256 GB)** | *Optional but recommended.* Holds all `.zim` files. English Wikipedia Maxi alone is ~100 GB. Without an SSD, data is stored on the boot SD card (only small content like WikiMed/iFixit fits). |
 | **Asus router** supporting **DD-WRT or FreshTomato** | E.g. RT-AC68U, RT-N66U. Required for captive portal. |
 | **LiFePO₄ battery + buck converter** | 12 V → 5 V 5 A USB-C PD. Target 12+ hours runtime. |
 | **Ethernet cable** | Pi to router LAN port. |
@@ -80,12 +82,12 @@ Everything runs on the Pi. Nothing leaves the Pi during normal operation. The on
 
 > **⚠️ READ [`ROUTER_SETUP.md`](./ROUTER_SETUP.md) FIRST.** The Pi on its own does not broadcast Wi-Fi. A correctly configured captive portal router is mandatory or no client will ever reach Ark.
 
-The installer **does not download any `.zim` content** — it only prepares the OS, installs Ollama and Kiwix tools, mounts the SSD, and deploys systemd. All content is downloaded later via the web-based `/admin` dashboard.
+The installer **does not download any `.zim` content** — it only prepares the OS, installs Ollama and Kiwix tools, sets up the data directory, and deploys systemd. All content is downloaded later via the web-based `/admin` dashboard.
 
 ### Steps
 
 1. **Flash** Raspberry Pi OS Lite (64-bit) to the Pi's SD card.
-2. **Attach your external SSD** to the Pi (formatted, empty is fine). The installer can mount it for you and optionally add an `fstab` entry.
+2. **(Optional)** Attach an external SSD to the Pi. The installer can mount it and add an `fstab` entry. Without an SSD, Ark stores data on the boot SD card.
 3. **Clone** this repo onto the Pi:
    ```bash
    sudo apt install git
@@ -96,7 +98,7 @@ The installer **does not download any `.zim` content** — it only prepares the 
    ```
 4. The installer will:
    - Print a large warning and require Y/N acknowledgement of `ROUTER_SETUP.md`.
-   - Ask for the **SSD mount point** (e.g. `/mnt/ssd-ark`). If the path isn't yet a mountpoint it shows `lsblk`, lets you pick a device, mounts it, and optionally adds an `fstab` entry via `blkid` UUID.
+   - Ask for the **storage location** — external SSD (recommended) or boot SD card. For SSD: enter the mount point, and if not yet mounted, the installer shows `lsblk`, lets you pick a device, mounts it, and optionally adds an `fstab` entry via `blkid` UUID.
    - Ask which **gemma4 model** to pull (`gemma4:2b`, `gemma4:4b`).
    - Update the OS and install dependencies.
    - Install Ollama, `kiwix-serve`, and `kiwix-manage` (ARM64).
@@ -126,7 +128,7 @@ Visit `http://<pi-ip>/admin` to:
 - Set an **auto-update interval** (0–104 weeks). A background thread checks the Kiwix OPDS catalog and silently replaces any `.zim` that has a newer version.
 - Trigger a manual "Check Now" update sweep.
 
-All admin settings persist to `${ARK_DATA_DIR}/config.json` on the SSD.
+All admin settings persist to `${ARK_DATA_DIR}/config.json`.
 
 ---
 
@@ -141,7 +143,7 @@ journalctl -u ark-kiwix -f
 sudo systemctl restart ark-flask ark-kiwix
 
 # Swap models (gemma4 family only)
-ollama pull gemma4:9b
+ollama pull gemma4:4b
 sudo systemctl edit ark-flask      # change ARK_OLLAMA_MODEL env
 sudo systemctl restart ark-flask
 
@@ -170,7 +172,7 @@ project-ark/
 └── ark-kiwix.service       # systemd unit for Kiwix-serve (--monitorLibrary)
 ```
 
-On the SSD, at runtime:
+On the SSD (or SD card), at runtime:
 
 ```
 ${ARK_DATA_DIR}/
