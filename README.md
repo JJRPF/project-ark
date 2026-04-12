@@ -118,11 +118,11 @@ Visit `http://<pi-ip>/admin` to:
 
 - See live **Storage Matrix** — total, used, free, and a dynamic recommendation of which content combinations will fit.
 - Browse the curated **Resource Library**:
-  - Wikipedia (English, Full) — ~102 GB
-  - WikiMed Medicine — ~4.2 GB
+  - Wikipedia (English, Full) — ~124 GB
+  - Wikipedia (English, Text Only) — ~52 GB
+  - WikiMed Medicine — ~2.2 GB
   - iFixit Repair Guides — ~3.6 GB
-  - WikiHow — ~12.3 GB
-  - Project Gutenberg — ~72 GB
+  - Project Gutenberg — ~221 GB
 - Start a download — Flask streams the `.zim` in 8 KiB chunks. If the network drops, the next click resumes from the exact byte offset using an HTTP `Range` header.
 - Watch real-time progress bars on each resource card.
 - Set an **auto-update interval** (0–104 weeks). A background thread checks the Kiwix OPDS catalog and silently replaces any `.zim` that has a newer version.

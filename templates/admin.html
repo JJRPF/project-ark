@@ -97,8 +97,24 @@
       </form>
     </section>
 
+    <!-- ============ Password ============ -->
+    <section class="card" aria-labelledby="pw-heading">
+      <h2 id="pw-heading">Admin Password</h2>
+      <p class="hint">
+        Default is <code>ark</code>. Username can be anything (only the password is checked).
+      </p>
+      <form id="pw-form" autocomplete="off">
+        <div class="row">
+          <input id="new-pw" name="new-pw" type="password"
+                 placeholder="New password" minlength="3" maxlength="128" required>
+          <button type="submit" class="btn-primary">Change</button>
+        </div>
+        <p id="pw-status" class="hint muted" aria-live="polite"></p>
+      </form>
+    </section>
+
     <footer class="foot">
-      <p>Project Ark admin — all config stored in <code>config.json</code> on the SSD.</p>
+      <p>Project Ark admin — all config stored in <code>config.json</code>.</p>
     </footer>
   </main>
 
@@ -134,25 +150,22 @@
     }
 
     function recommendFor(freeGB) {
-      // Suggest realistic combinations of content that fit in the free space.
-      if (freeGB >= 200) {
-        return 'Room for the full Wikipedia + Project Gutenberg + WikiHow + iFixit + WikiMed.';
+      // Sizes: Wiki full 124 GB, Wiki text 52 GB, WikiMed 2.2 GB,
+      //        iFixit 3.6 GB, Gutenberg 221 GB.
+      if (freeGB >= 400) {
+        return 'Room for everything — Gutenberg + full Wikipedia + iFixit + WikiMed.';
+      } else if (freeGB >= 230) {
+        return 'Room for Gutenberg + WikiMed + iFixit. Or skip Gutenberg for full Wikipedia.';
       } else if (freeGB >= 130) {
-        return 'Recommended: Wikipedia (full) + WikiHow + iFixit + WikiMed. Gutenberg won\'t fit.';
-      } else if (freeGB >= 110) {
-        return 'Recommended: Wikipedia (full) + WikiMed + iFixit. Skip Gutenberg / WikiHow.';
-      } else if (freeGB >= 95) {
-        return 'Tight fit: Wikipedia (full) only. Free up space before adding more.';
-      } else if (freeGB >= 85) {
-        return 'Recommended: Project Gutenberg + WikiMed + iFixit + WikiHow. Skip full Wikipedia.';
-      } else if (freeGB >= 25) {
-        return 'Recommended: WikiMed + iFixit + WikiHow (compact survival set).';
+        return 'Recommended: full Wikipedia (124 GB) + WikiMed + iFixit.';
+      } else if (freeGB >= 60) {
+        return 'Recommended: Wikipedia text-only (52 GB) + WikiMed + iFixit.';
       } else if (freeGB >= 10) {
-        return 'Recommended: WikiMed + iFixit. Larger content won\'t fit.';
-      } else if (freeGB >= 5) {
-        return 'Recommended: WikiMed only. Nearly full — free up space.';
+        return 'Recommended: WikiMed (2.2 GB) + iFixit (3.6 GB). Compact survival set.';
+      } else if (freeGB >= 3) {
+        return 'Tight: WikiMed only (2.2 GB). Free up space for more.';
       }
-      return 'Not enough free space for any curated bundle. Free up the SSD.';
+      return 'Not enough free space for any resource. Free up the disk.';
     }
 
     // ---------- Resources ----------
@@ -303,6 +316,30 @@
         refreshResources();
       } catch (e) {
         $('config-status').textContent = 'Network error while starting update check.';
+      }
+    });
+
+    // ---------- Password form ----------
+    $('pw-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pw = $('new-pw').value.trim();
+      if (!pw || pw.length < 3) return;
+      $('pw-status').textContent = 'Saving…';
+      try {
+        const r = await fetch('/api/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw })
+        });
+        const data = await r.json();
+        if (data.ok) {
+          $('pw-status').textContent = 'Password updated. The browser will ask for the new password on next request.';
+          $('new-pw').value = '';
+        } else {
+          $('pw-status').textContent = 'Error: ' + (data.error || 'unknown');
+        }
+      } catch (err) {
+        $('pw-status').textContent = 'Network error while saving password.';
       }
     });
 

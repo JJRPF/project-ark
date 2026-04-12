@@ -569,6 +569,31 @@ button.loading .btn-spinner { display: inline-block; }
   min-height: 44px;
 }
 
+/* ---------- Password form ---------- */
+#pw-form .row { margin-bottom: 4px; }
+
+#pw-form input[type="password"] {
+  flex: 1;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+}
+#pw-form input[type="password"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 122, 26, 0.2);
+}
+
+#pw-form button {
+  min-width: 100px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
 /* Wider screens: resource meta lays out more comfortably */
 @media (min-width: 640px) {
   .resource-head { align-items: center; }

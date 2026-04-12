@@ -28,12 +28,13 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 # ---------- Config ----------
 KIWIX_BASE   = os.environ.get("ARK_KIWIX_URL", "http://127.0.0.1:8080")
@@ -60,24 +61,35 @@ SYSTEM_PROMPT = (
     "plainly — do not invent facts."
 )
 
-# Curated offline content catalog. `kiwix_name` is the OPDS `name` field
-# used to resolve the current latest filename + download URL at runtime.
+# Curated offline content catalog. `kiwix_name` + `kiwix_flavour` are used
+# to resolve the current download URL via the Kiwix OPDS v2 catalog.
 RESOURCE_CATALOG: list[dict[str, Any]] = [
     {
         "id": "wikipedia_maxi",
         "name": "Wikipedia (English, Full)",
-        "description": "Complete English Wikipedia with images. The big one.",
+        "description": "Complete English Wikipedia with all images. The big one.",
         "category": "Reference",
-        "approx_size_gb": 102.0,
-        "kiwix_name": "wikipedia_en_all_maxi",
+        "approx_size_gb": 124.0,
+        "kiwix_name": "wikipedia_en_all",
+        "kiwix_flavour": "maxi",
+    },
+    {
+        "id": "wikipedia_nopic",
+        "name": "Wikipedia (English, Text Only)",
+        "description": "Full English Wikipedia without images. Much smaller footprint.",
+        "category": "Reference",
+        "approx_size_gb": 52.0,
+        "kiwix_name": "wikipedia_en_all",
+        "kiwix_flavour": "nopic",
     },
     {
         "id": "wikimed",
         "name": "WikiMed Medicine",
-        "description": "All medical articles from Wikipedia. Critical for triage.",
+        "description": "All medical articles from Wikipedia with images. Critical for triage.",
         "category": "Medical",
-        "approx_size_gb": 4.2,
-        "kiwix_name": "wikipedia_en_medicine_maxi",
+        "approx_size_gb": 2.2,
+        "kiwix_name": "wikipedia_en_medicine",
+        "kiwix_flavour": "maxi",
     },
     {
         "id": "ifixit",
@@ -86,22 +98,16 @@ RESOURCE_CATALOG: list[dict[str, Any]] = [
         "category": "Skills",
         "approx_size_gb": 3.6,
         "kiwix_name": "ifixit_en_all",
-    },
-    {
-        "id": "wikihow",
-        "name": "WikiHow",
-        "description": "Practical, step-by-step how-to guides on everyday tasks.",
-        "category": "Skills",
-        "approx_size_gb": 12.3,
-        "kiwix_name": "wikihow_en_maxi",
+        "kiwix_flavour": "",
     },
     {
         "id": "gutenberg",
         "name": "Project Gutenberg",
         "description": "~70,000 public-domain books. Literature, manuals, reference.",
         "category": "Library",
-        "approx_size_gb": 72.0,
+        "approx_size_gb": 221.0,
         "kiwix_name": "gutenberg_en_all",
+        "kiwix_flavour": "",
     },
 ]
 
@@ -109,6 +115,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "update_interval_weeks": 0,   # 0 = auto-updates disabled
     "last_update_check":    None, # unix ts
     "downloaded_resources": {},   # id -> {filename, downloaded_at, updated}
+    "admin_password":       "ark", # change via /admin config panel
 }
 
 # ---------- Logging ----------
@@ -120,6 +127,22 @@ log = logging.getLogger("ark")
 
 # ---------- App ----------
 app = Flask(__name__, static_folder="static", template_folder="templates")
+
+
+def admin_required(f: Any) -> Any:
+    """HTTP Basic Auth decorator for admin routes."""
+    @wraps(f)
+    def decorated(*args: Any, **kwargs: Any) -> Any:
+        auth = request.authorization
+        cfg = load_config()
+        password = cfg.get("admin_password") or "ark"
+        if not auth or auth.password != password:
+            return Response(
+                "Admin login required.\n", 401,
+                {"WWW-Authenticate": 'Basic realm="Ark Admin"'},
+            )
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ======================================================================
@@ -182,12 +205,18 @@ def get_storage() -> dict[str, Any]:
 #   Kiwix OPDS lookup + library management
 # ======================================================================
 
-def opds_find(kiwix_name: str) -> dict[str, Any] | None:
-    """Resolve a resource's current download URL + size via Kiwix OPDS."""
+def opds_find(kiwix_name: str, kiwix_flavour: str = "") -> dict[str, Any] | None:
+    """Resolve a resource's current download URL + size via Kiwix OPDS.
+
+    Kiwix OPDS entries use ``name`` (e.g. ``wikipedia_en_all``) and an
+    optional ``flavour`` (e.g. ``maxi``, ``nopic``, ``mini``).  The
+    acquisition link points to a ``.meta4`` metalink file; we strip that
+    suffix to get the direct ``.zim`` download URL on the Kiwix CDN.
+    """
     try:
         r = requests.get(
             OPDS_CATALOG,
-            params={"name": kiwix_name, "count": "1"},
+            params={"name": kiwix_name, "count": "10"},
             timeout=HTTP_TIMEOUT,
         )
         r.raise_for_status()
@@ -196,32 +225,42 @@ def opds_find(kiwix_name: str) -> dict[str, Any] | None:
         return None
 
     soup = BeautifulSoup(r.text, "xml")
-    entry = soup.find("entry")
-    if not entry:
-        return None
 
-    # Kiwix exposes a direct .zim download as rel="...acquisition/open-access"
-    # with type="application/x-zim".
-    link = None
-    for candidate in entry.find_all("link"):
-        rel = candidate.get("rel", "")
-        typ = candidate.get("type", "")
-        if "acquisition" in rel and "zim" in typ:
-            link = candidate
-            break
-    if link is None:
-        return None
+    for entry in soup.find_all("entry"):
+        # Match the requested flavour (empty string matches entries with no flavour).
+        entry_flavour_tag = entry.find("flavour")
+        entry_flavour = entry_flavour_tag.get_text(strip=True) if entry_flavour_tag else ""
+        if entry_flavour != kiwix_flavour:
+            continue
 
-    href = link.get("href")
-    if not href:
-        return None
+        # Find the acquisition link (type includes "zim").
+        link = None
+        for candidate in entry.find_all("link"):
+            rel = candidate.get("rel", "")
+            typ = candidate.get("type", "")
+            if "acquisition" in rel and "zim" in typ:
+                link = candidate
+                break
+        if link is None:
+            continue
 
-    return {
-        "url":      href,
-        "size":     int(link.get("length") or 0),
-        "updated":  (entry.find("updated").text if entry.find("updated") else None),
-        "filename": os.path.basename(href.split("?", 1)[0]),
-    }
+        href = link.get("href", "")
+        if not href:
+            continue
+
+        # Strip .meta4 suffix — the bare URL is the direct .zim download.
+        if href.endswith(".meta4"):
+            href = href[: -len(".meta4")]
+
+        return {
+            "url":      href,
+            "size":     int(link.get("length") or 0),
+            "updated":  (entry.find("updated").text if entry.find("updated") else None),
+            "filename": os.path.basename(href.split("?", 1)[0]),
+        }
+
+    log.warning("OPDS: no entry matched name=%s flavour=%r", kiwix_name, kiwix_flavour)
+    return None
 
 
 def rebuild_library() -> None:
@@ -397,7 +436,7 @@ def start_download(resource_id: str) -> tuple[bool, str]:
             total=0, error=None)
 
     def _runner() -> None:
-        info = opds_find(resource["kiwix_name"])
+        info = opds_find(resource["kiwix_name"], resource.get("kiwix_flavour", ""))
         if not info:
             _set_dl(resource_id, status="error",
                     error="Not found in Kiwix catalog (no internet?).")
@@ -423,7 +462,7 @@ def check_for_updates() -> int:
         resource = _get_resource(rid)
         if not resource:
             continue
-        info = opds_find(resource["kiwix_name"])
+        info = opds_find(resource["kiwix_name"], resource.get("kiwix_flavour", ""))
         if not info:
             continue
         if info["filename"] and info["filename"] != meta.get("filename"):
@@ -658,17 +697,20 @@ def healthz():
 # ======================================================================
 
 @app.route("/admin")
+@admin_required
 def admin():
     return render_template("admin.html", model=OLLAMA_MODEL,
                            data_dir=ARK_DATA_DIR)
 
 
 @app.route("/api/storage")
+@admin_required
 def api_storage():
     return jsonify(get_storage())
 
 
 @app.route("/api/resources")
+@admin_required
 def api_resources():
     storage = get_storage()
     cfg = load_config()
@@ -701,6 +743,7 @@ def api_resources():
 
 
 @app.route("/api/download", methods=["POST"])
+@admin_required
 def api_download():
     body = request.get_json(silent=True) or {}
     rid = (body.get("id") or "").strip()
@@ -724,12 +767,14 @@ def api_download():
 
 
 @app.route("/api/downloads")
+@admin_required
 def api_downloads():
     with _dl_lock:
         return jsonify({k: dict(v) for k, v in _dl_state.items()})
 
 
 @app.route("/api/config", methods=["GET", "POST"])
+@admin_required
 def api_config():
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
@@ -750,6 +795,7 @@ def api_config():
 
 
 @app.route("/api/check-updates", methods=["POST"])
+@admin_required
 def api_check_updates():
     """Manual trigger for the auto-update check."""
     def _runner() -> None:
@@ -763,6 +809,22 @@ def api_check_updates():
             log.exception("Manual update check failed.")
     threading.Thread(target=_runner, daemon=True).start()
     return jsonify({"ok": True, "message": "Update check started."})
+
+
+@app.route("/api/password", methods=["POST"])
+@admin_required
+def api_password():
+    """Change the admin password."""
+    body = request.get_json(silent=True) or {}
+    new_pw = (body.get("password") or "").strip()
+    if not new_pw or len(new_pw) < 3:
+        return jsonify({"ok": False, "error": "Password must be at least 3 characters."}), 400
+    if len(new_pw) > 128:
+        return jsonify({"ok": False, "error": "Password too long."}), 400
+    cfg = load_config()
+    cfg["admin_password"] = new_pw
+    save_config(cfg)
+    return jsonify({"ok": True, "message": "Password updated."})
 
 
 # ======================================================================
