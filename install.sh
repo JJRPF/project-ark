@@ -172,32 +172,32 @@ ok "Ark data directory: ${ARK_DATA_DIR}"
 echo
 
 # ---------- Interactive: Model choice ----------
-echo -e "${BOLD}[2/2] Select Ollama model${NC}"
+echo -e "${BOLD}[2/2] Select LLM model (GGUF format)${NC}"
 echo
 echo "  RAM estimates include model weights + KV cache + inference overhead."
 echo "  Pi 5 (8 GB) typically has ~5–6 GB free after OS + Kiwix + Flask."
 echo
 echo -e "  ${BOLD}Recommended:${NC}"
-echo "    1) gemma4:e2b   (~3 GB RAM — fast, fits comfortably on 8 GB Pi)"
+echo "    1) gemma-2-2b-it (~2 GB RAM — fast, fits comfortably on 8 GB Pi)"
 echo
 echo -e "  ${BOLD}Advanced:${NC}"
-echo "    2) gemma4:e4b   (~6 GB RAM — better quality, TIGHT on 8 GB — may OOM)"
-echo "    3) phi4-mini     (~4 GB RAM — Microsoft, strong reasoning)"
-echo "    4) llama3.2:3b   (~4 GB RAM — Meta, balanced all-rounder)"
-echo "    5) qwen3:1.7b    (~2 GB RAM — Alibaba, fast + multilingual)"
-echo "    6) Custom         (enter any Ollama model tag)"
+echo "    2) gemma-2-9b-it (~7 GB RAM — better quality, TIGHT on 8 GB — may OOM)"
+echo "    3) phi-2          (~4 GB RAM — Microsoft, strong reasoning)"
+echo "    4) mistral-7b     (~5 GB RAM — Mistral, fast + capable)"
+echo "    5) neural-chat-7b (~5 GB RAM — Intel, optimized)"
+echo "    6) Custom         (enter GGUF model name)"
 read -rp "Choice [1]: " model_choice
 case "${model_choice}" in
-    2) OLLAMA_MODEL="gemma4:e4b" ;;
-    3) OLLAMA_MODEL="phi4-mini"  ;;
-    4) OLLAMA_MODEL="llama3.2:3b" ;;
-    5) OLLAMA_MODEL="qwen3:1.7b" ;;
+    2) OLLAMA_MODEL="gemma-2-9b-it" ;;
+    3) OLLAMA_MODEL="phi-2"  ;;
+    4) OLLAMA_MODEL="mistral-7b" ;;
+    5) OLLAMA_MODEL="neural-chat-7b" ;;
     6)
-        read -rp "Enter Ollama model tag (e.g. mistral:7b): " custom_model
+        read -rp "Enter GGUF model name: " custom_model
         [[ -z "${custom_model}" ]] && die "Model tag cannot be empty."
         OLLAMA_MODEL="${custom_model}"
         ;;
-    *) OLLAMA_MODEL="gemma4:e2b" ;;
+    *) OLLAMA_MODEL="gemma-2-2b-it" ;;
 esac
 ok "Using model: ${OLLAMA_MODEL}"
 echo
@@ -229,20 +229,50 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     build-essential libxml2-dev libxslt-dev \
     git
 
-# ---------- Ollama ----------
-if ! command -v ollama >/dev/null 2>&1; then
-    log "Installing Ollama..."
-    curl -fsSL https://ollama.com/install.sh | sh
+# ---------- llama.cpp ----------
+LLAMA_CPP_DIR="/opt/llama-cpp"
+LLAMA_SERVER="${LLAMA_CPP_DIR}/server"
+
+if [[ ! -x "${LLAMA_SERVER}" ]]; then
+    log "Installing llama.cpp..."
+    mkdir -p "${LLAMA_CPP_DIR}"
+
+    # Detect architecture
+    ARCH=$(uname -m)
+    if [[ "${ARCH}" == "aarch64" ]]; then
+        LLAMA_RELEASE="llama-cpp-arm64"
+    elif [[ "${ARCH}" == "armv7l" ]]; then
+        LLAMA_RELEASE="llama-cpp-armv7"
+    else
+        LLAMA_RELEASE="llama-cpp-x86_64"
+    fi
+
+    # Download latest llama.cpp release
+    LATEST_URL=$(curl -s https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | \
+        grep "browser_download_url" | grep "${LLAMA_RELEASE}" | head -1 | cut -d'"' -f4)
+
+    if [[ -z "${LATEST_URL}" ]]; then
+        warn "Could not auto-detect llama.cpp release. Please download manually from:"
+        warn "https://github.com/ggerganov/llama.cpp/releases"
+        warn "Extract to ${LLAMA_CPP_DIR} and ensure 'server' binary exists."
+    else
+        tmp="$(mktemp -d)"
+        pushd "${tmp}" >/dev/null
+        wget -q --show-progress "${LATEST_URL}" -O llama.tar.gz || \
+            die "Failed to download llama.cpp from ${LATEST_URL}"
+        tar -xzf llama.tar.gz
+        cp -r llama-cpp-*/* "${LLAMA_CPP_DIR}/" 2>/dev/null || true
+        popd >/dev/null
+        rm -rf "${tmp}"
+
+        if [[ ! -x "${LLAMA_SERVER}" ]]; then
+            die "llama.cpp server binary not found after extraction. Install manually."
+        fi
+        ok "llama.cpp installed at ${LLAMA_CPP_DIR}"
+    fi
 else
-    ok "Ollama already installed."
+    ok "llama.cpp already installed."
 fi
-
-log "Enabling ollama.service..."
-systemctl enable --now ollama.service || warn "Could not enable ollama.service (may already be running)."
-
-log "Pulling model ${OLLAMA_MODEL} (this can take a while)..."
-sudo -u "${INSTALL_USER}" ollama pull "${OLLAMA_MODEL}" || \
-    warn "Failed to pull ${OLLAMA_MODEL}. You can retry manually with: ollama pull ${OLLAMA_MODEL}"
 
 # ---------- Kiwix-serve ARM64 ----------
 if [[ ! -x "${KIWIX_BIN}" ]]; then
@@ -319,6 +349,16 @@ sed \
     -e "s|@KIWIX_BIN@|${KIWIX_BIN}|g" \
     "${SCRIPT_DIR}/ark-kiwix.service" > /etc/systemd/system/ark-kiwix.service
 
+# ark-llama-cpp.service — templated with user, paths, and model
+# Note: GGUF models should be in a standard location or downloaded first
+MODELS_DIR="${ARK_DATA_DIR}/models"
+mkdir -p "${MODELS_DIR}"
+sed \
+    -e "s|@INSTALL_USER@|${INSTALL_USER}|g" \
+    -e "s|@MODELS_DIR@|${MODELS_DIR}|g" \
+    -e "s|@OLLAMA_MODEL@|${OLLAMA_MODEL}|g" \
+    "${SCRIPT_DIR}/ark-llama-cpp.service" > /etc/systemd/system/ark-llama-cpp.service
+
 # ark-flask.service — templated with user & paths (includes ARK_DATA_DIR)
 sed \
     -e "s|@INSTALL_USER@|${INSTALL_USER}|g" \
@@ -329,8 +369,10 @@ sed \
     "${SCRIPT_DIR}/ark-flask.service" > /etc/systemd/system/ark-flask.service
 
 systemctl daemon-reload
-systemctl enable ark-kiwix.service ark-flask.service
+systemctl enable ark-kiwix.service ark-llama-cpp.service ark-flask.service
 systemctl restart ark-kiwix.service
+sleep 2
+systemctl restart ark-llama-cpp.service
 sleep 2
 systemctl restart ark-flask.service
 sleep 2
@@ -339,6 +381,8 @@ sleep 2
 echo
 log "Service status:"
 systemctl --no-pager --lines=3 status ark-kiwix.service || true
+echo
+systemctl --no-pager --lines=3 status ark-llama-cpp.service || true
 echo
 systemctl --no-pager --lines=3 status ark-flask.service || true
 echo
@@ -368,8 +412,10 @@ cat <<SUCCESS
 
   Useful commands:
     sudo systemctl status ark-flask
+    sudo systemctl status ark-llama-cpp
     sudo systemctl status ark-kiwix
     journalctl -u ark-flask -f
+    journalctl -u ark-llama-cpp -f
     journalctl -u ark-kiwix -f
 
   Stay safe out there.

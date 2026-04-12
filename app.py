@@ -38,9 +38,10 @@ from flask import Flask, Response, jsonify, render_template, request
 
 # ---------- Config ----------
 KIWIX_BASE   = os.environ.get("ARK_KIWIX_URL", "http://127.0.0.1:8080")
-OLLAMA_BASE  = os.environ.get("ARK_OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("ARK_OLLAMA_MODEL", "gemma4:e2b")
+LLM_BASE     = os.environ.get("ARK_LLM_URL", "http://127.0.0.1:8001")
+LLM_MODEL    = os.environ.get("ARK_LLM_MODEL", "gemma-2-2b-it")
 ARK_DATA_DIR = os.environ.get("ARK_DATA_DIR", "/mnt/ssd-ark/ark-data")
+VERBOSE      = os.environ.get("ARK_VERBOSE", "").lower() in ("1", "true", "yes")
 
 ZIM_DIR      = os.path.join(ARK_DATA_DIR, "zims")
 LIBRARY_XML  = os.path.join(ARK_DATA_DIR, "library.xml")
@@ -55,10 +56,11 @@ MAX_CONTEXT_WORDS = 1500
 
 SYSTEM_PROMPT = (
     "You are an emergency offline survival assistant. "
-    "Answer the user's query using ONLY the provided Wikipedia context. "
-    "Be highly concise, format with clear bullet points, and prioritize "
-    "actionable steps. If the context does not contain the answer, say so "
-    "plainly — do not invent facts."
+    "Answer using ONLY the provided article context. "
+    "CRITICAL: If the article title or content is NOT relevant to the question, "
+    "say so plainly and refuse to answer. Do not invent facts. "
+    "Be concise, use bullet points, prioritize actionable steps. "
+    "Always cite the article you are using."
 )
 
 # Curated offline content catalog. `kiwix_name` + `kiwix_flavour` are used
@@ -514,7 +516,36 @@ def _shutdown_handler(signum: int, frame: Any) -> None:  # noqa: ARG001
 
 
 # ======================================================================
-#   RAG pipeline (unchanged behavior, still queries whatever Kiwix serves)
+#   Session storage for multi-turn conversations
+# ======================================================================
+
+_session_lock = threading.Lock()
+_sessions: dict[str, dict[str, Any]] = {}  # session_id -> {history, ...}
+
+
+def _get_session_id(req: Any) -> str:
+    """Get or create a session ID from request IP (simplified)."""
+    # In a real app, use proper session tokens. Here, use client IP.
+    return req.remote_addr or "unknown"
+
+
+def _get_session(session_id: str) -> dict[str, Any]:
+    """Get session data, creating if needed."""
+    with _session_lock:
+        if session_id not in _sessions:
+            _sessions[session_id] = {"history": []}
+        return _sessions[session_id]
+
+
+def _clear_session(session_id: str) -> None:
+    """Clear session history."""
+    with _session_lock:
+        if session_id in _sessions:
+            _sessions[session_id] = {"history": []}
+
+
+# ======================================================================
+#   RAG pipeline
 # ======================================================================
 
 _BOOK_NAME_CACHE: str | None = None
@@ -600,8 +631,8 @@ def fetch_and_clean_article(url: str) -> str:
     return text
 
 
-def ask_ollama(context: str, history: list[dict[str, str]]) -> str:
-    """Send a multi-turn conversation to Ollama's /api/chat endpoint.
+def ask_llm(context: str, history: list[dict[str, str]]) -> str:
+    """Send a multi-turn conversation to llama.cpp's OpenAI-compatible endpoint.
 
     ``history`` is a list of ``{"role": "user"|"assistant", "content": "..."}``
     messages.  The system prompt and RAG context are prepended automatically.
@@ -612,18 +643,26 @@ def ask_ollama(context: str, history: list[dict[str, str]]) -> str:
     )
     messages = [{"role": "system", "content": system_msg}] + history
 
+    if VERBOSE:
+        log.info("LLM request: model=%s, messages=%d", LLM_MODEL, len(messages))
+
     payload = {
-        "model":   OLLAMA_MODEL,
-        "stream":  False,
-        "messages": messages,
-        "options": {"temperature": 0.2, "num_ctx": 4096},
+        "model":       LLM_MODEL,
+        "messages":    messages,
+        "temperature": 0.2,
+        "top_p":       0.9,
     }
-    r = requests.post(f"{OLLAMA_BASE}/api/chat",
+    r = requests.post(f"{LLM_BASE}/v1/chat/completions",
                       json=payload, timeout=(5, 300))
     r.raise_for_status()
     data = r.json()
-    msg = data.get("message") or {}
-    return (msg.get("content") or "").strip()
+    choice = (data.get("choices") or [{}])[0]
+    content = choice.get("message", {}).get("content", "").strip()
+
+    if VERBOSE:
+        log.info("LLM response: %d chars", len(content))
+
+    return content
 
 
 # ======================================================================
@@ -632,7 +671,7 @@ def ask_ollama(context: str, history: list[dict[str, str]]) -> str:
 
 @app.route("/")
 def index():
-    return render_template("index.html", model=OLLAMA_MODEL)
+    return render_template("index.html", model=LLM_MODEL, verbose=VERBOSE)
 
 
 @app.route("/generate_204")
@@ -642,7 +681,7 @@ def index():
 @app.route("/ncsi.txt")
 @app.route("/connecttest.txt")
 def captive_probe():
-    return render_template("index.html", model=OLLAMA_MODEL), 200
+    return render_template("index.html", model=LLM_MODEL, verbose=VERBOSE), 200
 
 
 @app.route("/ask", methods=["POST"])
@@ -687,11 +726,11 @@ def ask():
     messages = list(history) + [{"role": "user", "content": query}]
 
     try:
-        answer = ask_ollama(context, messages)
+        answer = ask_llm(context, messages)
     except requests.RequestException as e:
-        log.warning("Ollama call failed: %s", e)
+        log.warning("LLM call failed: %s", e)
         return jsonify({"ok": False,
-                        "error": "Local LLM is not responding. Is ollama running?"}), 502
+                        "error": "Local LLM is not responding. Is llama.cpp running?"}), 502
 
     if not answer:
         return jsonify({"ok": False, "error": "LLM returned an empty answer."}), 502
@@ -700,14 +739,77 @@ def ask():
         "ok": True,
         "answer": answer,
         "source": article_url,
-        "model": OLLAMA_MODEL,
+        "model": LLM_MODEL,
         "context_preview": html.escape(context[:280]) + ("…" if len(context) > 280 else ""),
     })
 
 
+@app.route("/api/search", methods=["POST"])
+def api_search():
+    """Search Kiwix and return top 5 results for manual article selection."""
+    payload = request.get_json(silent=True) or {}
+    query = (payload.get("query") or "").strip()
+    if not query or len(query) > 500:
+        return jsonify({"ok": False, "error": "Invalid query."}), 400
+
+    book = get_book_name()
+    if not book:
+        return jsonify({"ok": False, "error": "No Kiwix content available."}), 502
+
+    results = []
+    try:
+        r = requests.get(
+            f"{KIWIX_BASE}/suggest",
+            params={"content": book, "term": query, "count": 5},
+            timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+        for i, hit in enumerate(data, 1):
+            path = hit.get("path") or hit.get("url")
+            if path:
+                url = urljoin(KIWIX_BASE, f"/content/{book}/{path.lstrip('/')}")
+                # Try to fetch snippet
+                snippet = ""
+                try:
+                    art = requests.get(url, timeout=(5, 10))
+                    art.raise_for_status()
+                    soup = BeautifulSoup(art.text, "html.parser")
+                    main = soup.find("main") or soup.find(id="mw-content-text") or soup.body
+                    if main:
+                        paragraphs = [p.get_text(" ", strip=True) for p in main.find_all("p")]
+                        snippet = " ".join(paragraphs[:2])[:200]
+                except Exception:
+                    pass
+                results.append({
+                    "id": i - 1,
+                    "title": hit.get("label", "Unknown"),
+                    "url": url,
+                    "snippet": snippet,
+                })
+    except requests.RequestException as e:
+        log.warning("Article search failed: %s", e)
+        return jsonify({"ok": False, "error": "Search failed."}), 502
+
+    if VERBOSE:
+        log.info("Search returned %d results for: %s", len(results), query)
+
+    return jsonify({"ok": True, "results": results[:5]})
+
+
+@app.route("/api/clear-history", methods=["POST"])
+def api_clear_history():
+    """Clear the backend conversation history for this session."""
+    session_id = _get_session_id(request)
+    _clear_session(session_id)
+    if VERBOSE:
+        log.info("Cleared history for session: %s", session_id)
+    return jsonify({"ok": True, "message": "History cleared."})
+
+
 @app.route("/healthz")
 def healthz():
-    return jsonify({"ok": True, "model": OLLAMA_MODEL,
+    return jsonify({"ok": True, "model": LLM_MODEL,
                     "kiwix": KIWIX_BASE, "data_dir": ARK_DATA_DIR})
 
 
@@ -718,7 +820,7 @@ def healthz():
 @app.route("/admin")
 @admin_required
 def admin():
-    return render_template("admin.html", model=OLLAMA_MODEL,
+    return render_template("admin.html", model=LLM_MODEL,
                            data_dir=ARK_DATA_DIR)
 
 

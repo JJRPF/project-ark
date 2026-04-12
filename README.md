@@ -25,10 +25,11 @@ Connecting clients are automatically captured into a dark-mode, mobile-first web
                                     │  • Flask portal      :80       │
                                     │  • Flask /admin      :80       │
                                     │  • Kiwix-serve       :8080     │
-                                    │  • Ollama (local)    :11434    │
+                                    │  • llama.cpp server  :8001     │
                                     │  • External SSD or SD card     │
                                     │      └─ ark-data/              │
                                     │         ├─ zims/*.zim          │
+                                    │         ├─ models/*.gguf       │
                                     │         ├─ library.xml         │
                                     │         └─ config.json         │
                                     └────────────────────────────────┘
@@ -71,7 +72,7 @@ Everything runs on the Pi. Nothing leaves the Pi during normal operation. The on
 
 - Raspberry Pi OS Lite (64-bit, Debian bookworm)
 - Python 3.11+ / Flask
-- Ollama + local LLM (default: `gemma4:e2b`; supports any Ollama model)
+- llama.cpp + local LLM (default: `gemma-2-2b-it` GGUF; supports any GGUF model)
 - Kiwix-serve + kiwix-manage (ARM64) with `--monitorLibrary` auto-reload
 - Custom chunked resumable downloader + background scheduler (threaded)
 - systemd (two units: `ark-flask`, `ark-kiwix`)
@@ -99,7 +100,7 @@ The installer **does not download any `.zim` content** — it only prepares the 
 4. The installer will:
    - Print a large warning and require Y/N acknowledgement of `ROUTER_SETUP.md`.
    - Ask for the **storage location** — external SSD (recommended) or boot SD card. For SSD: enter the mount point, and if not yet mounted, the installer shows `lsblk`, lets you pick a device, mounts it, and optionally adds an `fstab` entry via `blkid` UUID.
-   - Ask which **Ollama model** to pull (default: `gemma4:e2b`, with advanced options and custom model support).
+   - Ask which **GGUF model** to use (default: `gemma-2-2b-it`, with advanced options and custom model support).
    - Update the OS and install dependencies.
    - Install Ollama, `kiwix-serve`, and `kiwix-manage` (ARM64).
    - Create `${MOUNT}/ark-data/{zims/,library.xml,config.json}`.
@@ -142,10 +143,10 @@ journalctl -u ark-kiwix -f
 # Restart services
 sudo systemctl restart ark-flask ark-kiwix
 
-# Swap models (any Ollama model works)
-ollama pull gemma4:e4b
-sudo systemctl edit ark-flask      # change ARK_OLLAMA_MODEL env
-sudo systemctl restart ark-flask
+# Swap models (use any GGUF model)
+# Download a GGUF model to ${ARK_DATA_DIR}/models/
+sudo systemctl edit ark-llama-cpp  # change ARK_LLM_MODEL env
+sudo systemctl restart ark-llama-cpp ark-flask
 
 # Manually inspect the library Kiwix is serving
 cat ${ARK_DATA_DIR}/library.xml

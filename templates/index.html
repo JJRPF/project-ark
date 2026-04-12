@@ -25,12 +25,28 @@
       </div>
     </header>
 
+    <!-- Slow response warning -->
+    <div class="chat-warning" aria-live="polite">
+      ⚠️ Running locally — responses may take 30–60 seconds. Please be patient.
+    </div>
+
     <!-- Chat log -->
     <section id="chat-log" class="chat-log" aria-live="polite" aria-label="Conversation">
       <div class="chat-welcome">
         <p>Ask a survival, medical, or practical question. Follow-up questions use the conversation history.</p>
       </div>
     </section>
+
+    <!-- Article picker modal -->
+    <div id="article-picker-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Pick an Article</h2>
+          <button type="button" class="modal-close" id="modal-close-btn" title="Close">✕</button>
+        </div>
+        <div id="article-list" class="article-list"></div>
+      </div>
+    </div>
 
     <!-- Input bar (pinned to bottom) -->
     <div class="chat-input-bar">
@@ -180,10 +196,74 @@
       }
     });
 
-    clearBtn.addEventListener('click', () => {
+    clearBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/clear-history', { method: 'POST' });
+      } catch (e) {
+        log('Warning: could not clear backend history.');
+      }
       history = [];
       chatLog.innerHTML = '<div class="chat-welcome"><p>Conversation cleared. Ask a new question.</p></div>';
     });
+
+    // Article picker modal
+    const modal = document.getElementById('article-picker-modal');
+    const modalCloseBtn = document.getElementById('modal-close-btn');
+    const articleList = document.getElementById('article-list');
+    let selectedArticleUrl = null;
+
+    function closeModal() {
+      modal.classList.add('hidden');
+      selectedArticleUrl = null;
+    }
+
+    modalCloseBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    document.addEventListener('click', (e) => {
+      if (e.target.classList.contains('article-option')) {
+        selectedArticleUrl = e.target.getAttribute('data-url');
+        closeModal();
+        // Re-fetch with selected article
+        if (selectedArticleUrl) {
+          refetchWithArticle(selectedArticleUrl);
+        }
+      }
+    });
+
+    async function searchArticles(query) {
+      try {
+        const r = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        const data = await r.json();
+        if (data.ok && data.results.length > 0) {
+          articleList.innerHTML = data.results.map(art =>
+            `<button type="button" class="article-option" data-url="${esc(art.url)}">`
+            + `<strong>${esc(art.title)}</strong>`
+            + (art.snippet ? `<p>${esc(art.snippet)}</p>` : '')
+            + `</button>`
+          ).join('');
+          modal.classList.remove('hidden');
+        }
+      } catch (e) {
+        log('Could not search articles.');
+      }
+    }
+
+    async function refetchWithArticle(articleUrl) {
+      try {
+        const context = await fetch(articleUrl, { method: 'GET' });
+        // This is a placeholder; in real use, server would have /api/fetch-article
+        log('Article selected.');
+      } catch (e) {
+        log('Could not load selected article.');
+      }
+    }
   })();
   </script>
 </body>
