@@ -71,7 +71,7 @@ Everything runs on the Pi. Nothing leaves the Pi during normal operation. The on
 
 - Raspberry Pi OS Lite (64-bit, Debian bookworm)
 - Python 3.11+ / Flask
-- Ollama + the **gemma4 family only** (`gemma4:2b`, `gemma4:4b`)
+- Ollama + local LLM (default: `gemma4:e2b`; supports any Ollama model)
 - Kiwix-serve + kiwix-manage (ARM64) with `--monitorLibrary` auto-reload
 - Custom chunked resumable downloader + background scheduler (threaded)
 - systemd (two units: `ark-flask`, `ark-kiwix`)
@@ -99,7 +99,7 @@ The installer **does not download any `.zim` content** — it only prepares the 
 4. The installer will:
    - Print a large warning and require Y/N acknowledgement of `ROUTER_SETUP.md`.
    - Ask for the **storage location** — external SSD (recommended) or boot SD card. For SSD: enter the mount point, and if not yet mounted, the installer shows `lsblk`, lets you pick a device, mounts it, and optionally adds an `fstab` entry via `blkid` UUID.
-   - Ask which **gemma4 model** to pull (`gemma4:2b`, `gemma4:4b`).
+   - Ask which **Ollama model** to pull (default: `gemma4:e2b`, with advanced options and custom model support).
    - Update the OS and install dependencies.
    - Install Ollama, `kiwix-serve`, and `kiwix-manage` (ARM64).
    - Create `${MOUNT}/ark-data/{zims/,library.xml,config.json}`.
@@ -142,8 +142,8 @@ journalctl -u ark-kiwix -f
 # Restart services
 sudo systemctl restart ark-flask ark-kiwix
 
-# Swap models (gemma4 family only)
-ollama pull gemma4:4b
+# Swap models (any Ollama model works)
+ollama pull gemma4:e4b
 sudo systemctl edit ark-flask      # change ARK_OLLAMA_MODEL env
 sudo systemctl restart ark-flask
 

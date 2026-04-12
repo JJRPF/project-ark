@@ -19,7 +19,8 @@
       <p class="tagline">Content management &amp; auto-update control center</p>
       <p class="subtag">
         Model: <code>{{ model }}</code> &middot; Data: <code>{{ data_dir }}</code> &middot;
-        <a href="/" class="navlink">&larr; portal</a>
+        <a href="/" class="navlink">&larr; portal</a> &middot;
+        <a href="http://{{ request.host.split(':')[0] }}:8080" class="navlink" target="_blank">browse archives</a>
       </p>
     </header>
 

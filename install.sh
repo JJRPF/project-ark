@@ -173,13 +173,31 @@ echo
 
 # ---------- Interactive: Model choice ----------
 echo -e "${BOLD}[2/2] Select Ollama model${NC}"
-echo "Project Ark restricts model selection to the gemma4 family."
-echo "  1) gemma4:2b   (tiny — fastest, lowest RAM)"
-echo "  2) gemma4:4b   (default — balanced, recommended for Pi 5 8GB)"
-read -rp "Choice [2]: " model_choice
+echo
+echo "  RAM estimates include model weights + KV cache + inference overhead."
+echo "  Pi 5 (8 GB) typically has ~5–6 GB free after OS + Kiwix + Flask."
+echo
+echo -e "  ${BOLD}Recommended:${NC}"
+echo "    1) gemma4:e2b   (~3 GB RAM — fast, fits comfortably on 8 GB Pi)"
+echo
+echo -e "  ${BOLD}Advanced:${NC}"
+echo "    2) gemma4:e4b   (~6 GB RAM — better quality, TIGHT on 8 GB — may OOM)"
+echo "    3) phi4-mini     (~4 GB RAM — Microsoft, strong reasoning)"
+echo "    4) llama3.2:3b   (~4 GB RAM — Meta, balanced all-rounder)"
+echo "    5) qwen3:1.7b    (~2 GB RAM — Alibaba, fast + multilingual)"
+echo "    6) Custom         (enter any Ollama model tag)"
+read -rp "Choice [1]: " model_choice
 case "${model_choice}" in
-    1) OLLAMA_MODEL="gemma4:2b" ;;
-    *) OLLAMA_MODEL="gemma4:4b" ;;
+    2) OLLAMA_MODEL="gemma4:e4b" ;;
+    3) OLLAMA_MODEL="phi4-mini"  ;;
+    4) OLLAMA_MODEL="llama3.2:3b" ;;
+    5) OLLAMA_MODEL="qwen3:1.7b" ;;
+    6)
+        read -rp "Enter Ollama model tag (e.g. mistral:7b): " custom_model
+        [[ -z "${custom_model}" ]] && die "Model tag cannot be empty."
+        OLLAMA_MODEL="${custom_model}"
+        ;;
+    *) OLLAMA_MODEL="gemma4:e2b" ;;
 esac
 ok "Using model: ${OLLAMA_MODEL}"
 echo

@@ -9,147 +9,182 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main class="shell">
+  <main class="shell chat-shell">
 
-    <header class="hero">
-      <div class="logo" aria-hidden="true">
-        <span class="logo-glyph">▲</span>
+    <header class="hero hero-compact">
+      <div class="hero-row">
+        <div class="logo logo-sm" aria-hidden="true"><span class="logo-glyph">▲</span></div>
+        <div>
+          <h1 class="hero-inline">PROJECT <span class="accent">ARK</span></h1>
+          <p class="subtag">
+            <code>{{ model }}</code> &middot;
+            <a href="http://{{ request.host.split(':')[0] }}:8080" class="navlink" target="_blank">browse archives</a> &middot;
+            <a href="/admin" class="navlink">admin</a>
+          </p>
+        </div>
       </div>
-      <h1>PROJECT <span class="accent">ARK</span></h1>
-      <p class="tagline">Offline knowledge. Local AI. No internet required.</p>
-      <p class="subtag">Model: <code>{{ model }}</code> &middot; Source: offline Wikipedia</p>
     </header>
 
-    <section class="card" aria-labelledby="ask-heading">
-      <h2 id="ask-heading">Consult the Ark</h2>
-      <p class="hint">Ask a survival, medical, or practical question.</p>
+    <!-- Chat log -->
+    <section id="chat-log" class="chat-log" aria-live="polite" aria-label="Conversation">
+      <div class="chat-welcome">
+        <p>Ask a survival, medical, or practical question. Follow-up questions use the conversation history.</p>
+      </div>
+    </section>
 
+    <!-- Input bar (pinned to bottom) -->
+    <div class="chat-input-bar">
       <form id="ark-form" autocomplete="off">
-        <label for="query" class="sr-only">Your question</label>
-        <textarea id="query" name="query" rows="3"
-          placeholder="e.g. How do I purify water without fuel?"
-          maxlength="500" required></textarea>
-        <button type="submit" id="submit-btn">
-          <span class="btn-label">Consult the Ark</span>
-          <span class="btn-spinner" aria-hidden="true"></span>
-        </button>
+        <div class="chat-input-row">
+          <label for="query" class="sr-only">Your question</label>
+          <textarea id="query" name="query" rows="1"
+            placeholder="Ask a question…"
+            maxlength="500" required></textarea>
+          <button type="submit" id="submit-btn" title="Send">
+            <span class="btn-label">&#9654;</span>
+            <span class="btn-spinner" aria-hidden="true"></span>
+          </button>
+        </div>
       </form>
-    </section>
+      <div class="chat-toolbar">
+        <button type="button" id="clear-btn" class="btn-ghost btn-xs" title="Clear conversation">Clear chat</button>
+        <a href="http://{{ request.host.split(':')[0] }}:8080" class="navlink" target="_blank">Kiwix home</a>
+      </div>
+    </div>
 
-    <section id="result" class="card result hidden" aria-live="polite">
-      <h2>Response</h2>
-      <div id="answer" class="answer"></div>
-      <details id="source-details" class="source hidden">
-        <summary>Source &amp; context</summary>
-        <p><a id="source-link" href="#" target="_blank" rel="noopener">Full Wikipedia article</a></p>
-        <blockquote id="context-preview"></blockquote>
-      </details>
-    </section>
-
-    <section id="error" class="card error hidden" aria-live="assertive">
-      <h2>Signal Lost</h2>
-      <p id="error-msg"></p>
-    </section>
-
-    <footer class="foot">
-      <p>Project Ark is a fully offline emergency node.</p>
-      <p>No accounts. No tracking. No uplink.</p>
-      <p><a href="/admin" class="navlink">admin &rarr;</a></p>
-    </footer>
   </main>
 
   <script>
-    (function () {
-      const form     = document.getElementById('ark-form');
-      const queryEl  = document.getElementById('query');
-      const btn      = document.getElementById('submit-btn');
-      const resultEl = document.getElementById('result');
-      const answerEl = document.getElementById('answer');
-      const errorEl  = document.getElementById('error');
-      const errorMsg = document.getElementById('error-msg');
-      const srcBox   = document.getElementById('source-details');
-      const srcLink  = document.getElementById('source-link');
-      const ctxEl    = document.getElementById('context-preview');
+  (function () {
+    const form    = document.getElementById('ark-form');
+    const queryEl = document.getElementById('query');
+    const btn     = document.getElementById('submit-btn');
+    const chatLog = document.getElementById('chat-log');
+    const clearBtn = document.getElementById('clear-btn');
 
-      function setLoading(on) {
-        btn.disabled = on;
-        btn.classList.toggle('loading', on);
-        queryEl.disabled = on;
-      }
+    // Conversation history sent to the backend on each turn.
+    let history = [];  // [{role: "user", content}, {role: "assistant", content}]
 
-      function showError(msg) {
-        errorMsg.textContent = msg;
-        errorEl.classList.remove('hidden');
-        resultEl.classList.add('hidden');
-      }
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-      function renderAnswer(text) {
-        // Minimal markdown-ish rendering: preserve bullets + line breaks
-        // without pulling in a library. Safe because we escape first.
-        const esc = (s) => s.replace(/[&<>"']/g, (c) => ({
-          '&': '&amp;', '<': '&lt;', '>': '&gt;',
-          '"': '&quot;', "'": '&#39;'
-        }[c]));
-
-        const lines = esc(text).split(/\r?\n/);
-        let html = '';
-        let inList = false;
-        for (const raw of lines) {
-          const line = raw.trimEnd();
-          const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
-          if (bullet) {
-            if (!inList) { html += '<ul>'; inList = true; }
-            html += '<li>' + bullet[1] + '</li>';
-          } else {
-            if (inList) { html += '</ul>'; inList = false; }
-            if (line.trim()) html += '<p>' + line + '</p>';
-          }
+    function renderMd(text) {
+      const lines = esc(text).split(/\r?\n/);
+      let html = '', inList = false;
+      for (const raw of lines) {
+        const line = raw.trimEnd();
+        const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+        if (bullet) {
+          if (!inList) { html += '<ul>'; inList = true; }
+          html += '<li>' + bullet[1] + '</li>';
+        } else {
+          if (inList) { html += '</ul>'; inList = false; }
+          if (line.trim()) html += '<p>' + line + '</p>';
         }
-        if (inList) html += '</ul>';
-        answerEl.innerHTML = html || '<p><em>(empty response)</em></p>';
       }
+      if (inList) html += '</ul>';
+      return html || '<p><em>(empty)</em></p>';
+    }
 
-      form.addEventListener('submit', async (e) => {
+    function addBubble(role, content, meta) {
+      // Remove welcome message on first real bubble.
+      const welcome = chatLog.querySelector('.chat-welcome');
+      if (welcome) welcome.remove();
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble bubble-' + role;
+
+      if (role === 'user') {
+        bubble.innerHTML = '<p>' + esc(content) + '</p>';
+      } else if (role === 'error') {
+        bubble.innerHTML = '<p class="bubble-error">' + esc(content) + '</p>';
+      } else {
+        bubble.innerHTML = renderMd(content);
+        if (meta && meta.source) {
+          const det = document.createElement('details');
+          det.className = 'source';
+          det.innerHTML = '<summary>Source</summary>'
+            + '<a href="' + esc(meta.source) + '" target="_blank" rel="noopener">'
+            + esc(meta.source) + '</a>';
+          bubble.appendChild(det);
+        }
+      }
+      chatLog.appendChild(bubble);
+      bubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      return bubble;
+    }
+
+    function addThinking() {
+      const el = document.createElement('div');
+      el.className = 'bubble bubble-assistant bubble-thinking';
+      el.innerHTML = '<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>';
+      chatLog.appendChild(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      return el;
+    }
+
+    function setLoading(on) {
+      btn.disabled = on;
+      btn.classList.toggle('loading', on);
+      queryEl.disabled = on;
+    }
+
+    // Auto-resize textarea to content (1–4 lines).
+    queryEl.addEventListener('input', () => {
+      queryEl.style.height = 'auto';
+      queryEl.style.height = Math.min(queryEl.scrollHeight, 120) + 'px';
+    });
+
+    // Submit on Enter (Shift+Enter for newline).
+    queryEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        const q = queryEl.value.trim();
-        if (!q) return;
+        form.dispatchEvent(new Event('submit', { cancelable: true }));
+      }
+    });
 
-        errorEl.classList.add('hidden');
-        resultEl.classList.add('hidden');
-        srcBox.classList.add('hidden');
-        answerEl.innerHTML = '';
-        setLoading(true);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = queryEl.value.trim();
+      if (!q) return;
 
-        try {
-          const resp = await fetch('/ask', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q })
-          });
-          const data = await resp.json().catch(() => ({}));
+      addBubble('user', q);
+      queryEl.value = '';
+      queryEl.style.height = 'auto';
+      setLoading(true);
 
-          if (!resp.ok || !data.ok) {
-            showError(data.error || ('Request failed (' + resp.status + ').'));
-          } else {
-            renderAnswer(data.answer);
-            if (data.source) {
-              srcLink.href = data.source;
-              srcLink.textContent = data.source;
-            }
-            if (data.context_preview) {
-              ctxEl.innerHTML = data.context_preview;
-            }
-            srcBox.classList.remove('hidden');
-            resultEl.classList.remove('hidden');
-            resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-        } catch (err) {
-          showError('Could not reach the Ark. The node may be offline.');
-        } finally {
-          setLoading(false);
+      const thinking = addThinking();
+
+      try {
+        const resp = await fetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q, history: history })
+        });
+        const data = await resp.json().catch(() => ({}));
+        thinking.remove();
+
+        if (!resp.ok || !data.ok) {
+          addBubble('error', data.error || ('Request failed (' + resp.status + ').'));
+        } else {
+          history.push({ role: 'user', content: q });
+          history.push({ role: 'assistant', content: data.answer });
+          addBubble('assistant', data.answer, { source: data.source });
         }
-      });
-    })();
+      } catch (err) {
+        thinking.remove();
+        addBubble('error', 'Could not reach the Ark. The node may be offline.');
+      } finally {
+        setLoading(false);
+        queryEl.focus();
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      history = [];
+      chatLog.innerHTML = '<div class="chat-welcome"><p>Conversation cleared. Ask a new question.</p></div>';
+    });
+  })();
   </script>
 </body>
 </html>

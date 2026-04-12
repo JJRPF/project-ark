@@ -39,7 +39,7 @@ from flask import Flask, Response, jsonify, render_template, request
 # ---------- Config ----------
 KIWIX_BASE   = os.environ.get("ARK_KIWIX_URL", "http://127.0.0.1:8080")
 OLLAMA_BASE  = os.environ.get("ARK_OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("ARK_OLLAMA_MODEL", "gemma4:4b")
+OLLAMA_MODEL = os.environ.get("ARK_OLLAMA_MODEL", "gemma4:e2b")
 ARK_DATA_DIR = os.environ.get("ARK_DATA_DIR", "/mnt/ssd-ark/ark-data")
 
 ZIM_DIR      = os.path.join(ARK_DATA_DIR, "zims")
@@ -600,22 +600,30 @@ def fetch_and_clean_article(url: str) -> str:
     return text
 
 
-def ask_ollama(question: str, context: str) -> str:
+def ask_ollama(context: str, history: list[dict[str, str]]) -> str:
+    """Send a multi-turn conversation to Ollama's /api/chat endpoint.
+
+    ``history`` is a list of ``{"role": "user"|"assistant", "content": "..."}``
+    messages.  The system prompt and RAG context are prepended automatically.
+    """
+    system_msg = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"Wikipedia context:\n\"\"\"\n{context}\n\"\"\""
+    )
+    messages = [{"role": "system", "content": system_msg}] + history
+
     payload = {
-        "model":  OLLAMA_MODEL,
-        "stream": False,
-        "system": SYSTEM_PROMPT,
-        "prompt": (
-            f"Wikipedia context:\n\"\"\"\n{context}\n\"\"\"\n\n"
-            f"User question: {question}\n\nAnswer:"
-        ),
+        "model":   OLLAMA_MODEL,
+        "stream":  False,
+        "messages": messages,
         "options": {"temperature": 0.2, "num_ctx": 4096},
     }
-    r = requests.post(f"{OLLAMA_BASE}/api/generate",
+    r = requests.post(f"{OLLAMA_BASE}/api/chat",
                       json=payload, timeout=(5, 300))
     r.raise_for_status()
     data = r.json()
-    return (data.get("response") or "").strip()
+    msg = data.get("message") or {}
+    return (msg.get("content") or "").strip()
 
 
 # ======================================================================
@@ -641,13 +649,18 @@ def captive_probe():
 def ask():
     payload = request.get_json(silent=True) or {}
     query = (payload.get("query") or "").strip()
+    history: list[dict[str, str]] = payload.get("history") or []
+
     if not query:
         return jsonify({"ok": False, "error": "Empty query."}), 400
     if len(query) > 500:
         return jsonify({"ok": False, "error": "Query too long (max 500 chars)."}), 400
+    # Cap history to last 10 turns to keep context window manageable.
+    history = history[-10:]
 
-    log.info("Query: %s", query)
+    log.info("Query: %s (history: %d turns)", query, len(history))
 
+    # RAG lookup — search Kiwix using the latest user query.
     try:
         article_url = kiwix_top_article_url(query)
     except Exception as e:  # pragma: no cover — defensive
@@ -670,8 +683,11 @@ def ask():
         return jsonify({"ok": False,
                         "error": "Found an article but it had no readable text."}), 502
 
+    # Build conversation: prior history + new user message.
+    messages = list(history) + [{"role": "user", "content": query}]
+
     try:
-        answer = ask_ollama(query, context)
+        answer = ask_ollama(context, messages)
     except requests.RequestException as e:
         log.warning("Ollama call failed: %s", e)
         return jsonify({"ok": False,
