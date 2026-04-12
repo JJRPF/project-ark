@@ -208,7 +208,7 @@ log "Installing system dependencies..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3 python3-venv python3-pip \
     curl wget tar ca-certificates \
-    build-essential libcap2-bin \
+    build-essential libxml2-dev libxslt-dev \
     git
 
 # ---------- Ollama ----------
@@ -269,25 +269,28 @@ fi
 chown -R "${INSTALL_USER}:${INSTALL_USER}" "${ARK_DATA_DIR}"
 
 # ---------- Python venv & app deployment ----------
-log "Staging application files into ${ARK_DIR}..."
-mkdir -p "${ARK_DIR}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp -r "${SCRIPT_DIR}/app.py"        "${ARK_DIR}/"
-cp -r "${SCRIPT_DIR}/requirements.txt" "${ARK_DIR}/"
-cp -r "${SCRIPT_DIR}/templates"     "${ARK_DIR}/"
-cp -r "${SCRIPT_DIR}/static"        "${ARK_DIR}/"
-chown -R "${INSTALL_USER}:${INSTALL_USER}" "${ARK_DIR}"
+if [[ "$(realpath "${SCRIPT_DIR}")" != "$(realpath "${ARK_DIR}")" ]]; then
+    log "Staging application files into ${ARK_DIR}..."
+    mkdir -p "${ARK_DIR}"
+    cp -r "${SCRIPT_DIR}/app.py"           "${ARK_DIR}/"
+    cp -r "${SCRIPT_DIR}/requirements.txt" "${ARK_DIR}/"
+    cp -r "${SCRIPT_DIR}/templates"        "${ARK_DIR}/"
+    cp -r "${SCRIPT_DIR}/static"           "${ARK_DIR}/"
+    chown -R "${INSTALL_USER}:${INSTALL_USER}" "${ARK_DIR}"
+else
+    ok "Repo IS the deployment directory — skipping copy."
+fi
 
 log "Creating Python virtualenv..."
 sudo -u "${INSTALL_USER}" python3 -m venv "${VENV_DIR}"
 sudo -u "${INSTALL_USER}" "${VENV_DIR}/bin/pip" install --upgrade pip
 sudo -u "${INSTALL_USER}" "${VENV_DIR}/bin/pip" install -r "${ARK_DIR}/requirements.txt"
 
-# Allow the venv python to bind to privileged port 80 without running as root.
-log "Granting CAP_NET_BIND_SERVICE to venv python..."
-VENV_PY="$(readlink -f "${VENV_DIR}/bin/python")"
-setcap 'cap_net_bind_service=+ep' "${VENV_PY}" || \
-    warn "Could not setcap on ${VENV_PY}. Flask may fail to bind port 80."
+# NOTE: We do NOT setcap on the venv python. In a venv, python is a symlink
+# to the system binary (e.g. /usr/bin/python3.13). Setting file capabilities
+# on it triggers LD_LIBRARY_PATH restrictions that break pip and C extensions.
+# Port 80 binding is handled safely via AmbientCapabilities in ark-flask.service.
 
 # ---------- systemd units ----------
 log "Installing systemd unit files..."
