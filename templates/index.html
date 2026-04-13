@@ -37,17 +37,6 @@
       </div>
     </section>
 
-    <!-- Article picker modal -->
-    <div id="article-picker-modal" class="modal hidden">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>Pick an Article</h2>
-          <button type="button" class="modal-close" id="modal-close-btn" title="Close">✕</button>
-        </div>
-        <div id="article-list" class="article-list"></div>
-      </div>
-    </div>
-
     <!-- Input bar (pinned to bottom) -->
     <div class="chat-input-bar">
       <form id="ark-form" autocomplete="off">
@@ -79,7 +68,8 @@
     const clearBtn = document.getElementById('clear-btn');
 
     // Conversation history sent to the backend on each turn.
-    let history = [];  // [{role: "user", content}, {role: "assistant", content}]
+    let history = [];    // [{role: "user", content}, {role: "assistant", content}]
+    let lastSource = null;  // URL of the last article used — sent on follow-ups
 
     const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
       '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -175,17 +165,47 @@
         const resp = await fetch('/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q, history: history })
+          body: JSON.stringify({ query: q, history: history, last_source: lastSource })
         });
-        const data = await resp.json().catch(() => ({}));
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let resultBuffer = '';
+        let lastAnswer = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          resultBuffer += decoder.decode(value, { stream: true });
+          const lines = resultBuffer.split('\n');
+          resultBuffer = lines.pop(); // keep partial line
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              if (data.type === 'status') {
+                 thinking.innerHTML = `<div class="chat-bubble assistant thinking"><div class="dots"><span></span><span></span><span></span></div><div style="margin-left: 10px; font-size: 0.9em; color: var(--text-muted); opacity: 0.8;">${esc(data.message)}</div></div>`;
+              } else if (data.type === 'result' || data.error) {
+                 lastAnswer = data;
+              }
+            } catch (e) {
+               console.error("Error parsing NDJSON:", line, e);
+            }
+          }
+        }
+        
         thinking.remove();
 
-        if (!resp.ok || !data.ok) {
-          addBubble('error', data.error || ('Request failed (' + resp.status + ').'));
-        } else {
+        if (lastAnswer && lastAnswer.ok) {
           history.push({ role: 'user', content: q });
-          history.push({ role: 'assistant', content: data.answer });
-          addBubble('assistant', data.answer, { source: data.source });
+          history.push({ role: 'assistant', content: lastAnswer.answer });
+          if (lastAnswer.source) lastSource = lastAnswer.source;
+          addBubble('assistant', lastAnswer.answer, { source: lastAnswer.source });
+        } else if (lastAnswer && lastAnswer.error) {
+          addBubble('error', lastAnswer.error);
+        } else if (!resp.ok) {
+          addBubble('error', 'Request failed (' + resp.status + ').');
         }
       } catch (err) {
         thinking.remove();
@@ -203,67 +223,10 @@
         log('Warning: could not clear backend history.');
       }
       history = [];
+      lastSource = null;
       chatLog.innerHTML = '<div class="chat-welcome"><p>Conversation cleared. Ask a new question.</p></div>';
     });
 
-    // Article picker modal
-    const modal = document.getElementById('article-picker-modal');
-    const modalCloseBtn = document.getElementById('modal-close-btn');
-    const articleList = document.getElementById('article-list');
-    let selectedArticleUrl = null;
-
-    function closeModal() {
-      modal.classList.add('hidden');
-      selectedArticleUrl = null;
-    }
-
-    modalCloseBtn.addEventListener('click', closeModal);
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) closeModal();
-    });
-
-    document.addEventListener('click', (e) => {
-      if (e.target.classList.contains('article-option')) {
-        selectedArticleUrl = e.target.getAttribute('data-url');
-        closeModal();
-        // Re-fetch with selected article
-        if (selectedArticleUrl) {
-          refetchWithArticle(selectedArticleUrl);
-        }
-      }
-    });
-
-    async function searchArticles(query) {
-      try {
-        const r = await fetch('/api/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query })
-        });
-        const data = await r.json();
-        if (data.ok && data.results.length > 0) {
-          articleList.innerHTML = data.results.map(art =>
-            `<button type="button" class="article-option" data-url="${esc(art.url)}">`
-            + `<strong>${esc(art.title)}</strong>`
-            + (art.snippet ? `<p>${esc(art.snippet)}</p>` : '')
-            + `</button>`
-          ).join('');
-          modal.classList.remove('hidden');
-        }
-      } catch (e) {
-        log('Could not search articles.');
-      }
-    }
-
-    async function refetchWithArticle(articleUrl) {
-      try {
-        const context = await fetch(articleUrl, { method: 'GET' });
-        // This is a placeholder; in real use, server would have /api/fetch-article
-        log('Article selected.');
-      } catch (e) {
-        log('Could not load selected article.');
-      }
-    }
   })();
   </script>
 </body>

@@ -34,7 +34,7 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 # ---------- Config ----------
 KIWIX_BASE   = os.environ.get("ARK_KIWIX_URL", "http://127.0.0.1:8080")
@@ -55,13 +55,37 @@ HTTP_TIMEOUT = (5, 60)
 MAX_CONTEXT_WORDS = 1500
 
 SYSTEM_PROMPT = (
-    "You are an emergency offline survival assistant. "
-    "Answer using ONLY the provided article context. "
-    "CRITICAL: If the article title or content is NOT relevant to the question, "
-    "say so plainly and refuse to answer. Do not invent facts. "
-    "Be concise, use bullet points, prioritize actionable steps. "
-    "Always cite the article you are using."
+    "You are an emergency offline survival assistant running on a local device "
+    "with no internet. Answer using ONLY the provided article context. "
+    "The user may use abbreviations, slang, or informal language — interpret "
+    "them generously (e.g. 'CPR' = cardiopulmonary resuscitation, "
+    "'broken arm' = fracture management). "
+    "If the article content is clearly NOT about the topic the user is asking "
+    "about, reply EXACTLY with 'IRRELEVANT_ARTICLE' and nothing else. "
+    "Otherwise: be concise, use bullet points, prioritize actionable steps. "
+    "Cite which article you used at the end of your answer."
 )
+
+# Common abbreviations/slang → expanded search terms for Kiwix lookup.
+# We search BOTH the original query AND the expanded version.
+ABBREVIATIONS: dict[str, str] = {
+    "cpr": "cardiopulmonary resuscitation",
+    "aed": "automated external defibrillator",
+    "ppe": "personal protective equipment",
+    "ems": "emergency medical services",
+    "otc": "over-the-counter medication",
+    "iv": "intravenous therapy",
+    "bp": "blood pressure",
+    "hr": "heart rate",
+    "ob": "obstetrics childbirth",
+    "er": "emergency room first aid",
+    "uti": "urinary tract infection",
+    "std": "sexually transmitted infection",
+    "hvac": "heating ventilation air conditioning",
+    "emp": "electromagnetic pulse",
+    "mre": "meal ready to eat",
+    "sop": "standard operating procedure",
+}
 
 # Curated offline content catalog. `kiwix_name` + `kiwix_flavour` are used
 # to resolve the current download URL via the Kiwix OPDS v2 catalog.
@@ -576,58 +600,93 @@ def get_book_name() -> str | None:
     return _BOOK_NAME_CACHE
 
 
-def kiwix_top_article_url(query: str) -> str | None:
-    book = get_book_name()
-    if not book:
-        return None
+def _expand_query(query: str) -> list[str]:
+    """Return a list of search queries: original + abbreviation expansions."""
+    queries = [query]
+    lower = query.lower().strip()
+    # Check if any word in the query is a known abbreviation.
+    for abbr, expansion in ABBREVIATIONS.items():
+        # Match whole-word abbreviations.
+        if re.search(rf'\b{re.escape(abbr)}\b', lower):
+            expanded = re.sub(
+                rf'\b{re.escape(abbr)}\b', expansion, lower, flags=re.IGNORECASE
+            )
+            queries.append(expanded)
+            break  # one expansion is enough
+    return queries
 
-    try:
-        r = requests.get(
-            f"{KIWIX_BASE}/suggest",
-            params={"content": book, "term": query, "count": 5},
-            timeout=HTTP_TIMEOUT,
-        )
-        r.raise_for_status()
-        data = r.json()
-        for hit in data:
-            path = hit.get("path") or hit.get("url")
-            if path:
-                return urljoin(KIWIX_BASE, f"/content/{book}/{path.lstrip('/')}")
-    except (requests.RequestException, ValueError) as e:
-        log.info("Kiwix /suggest failed, falling back to /search: %s", e)
 
-    try:
-        r = requests.get(
-            f"{KIWIX_BASE}/search",
-            params={"books.name": book, "pattern": query, "pageLength": 1},
-            timeout=HTTP_TIMEOUT,
-        )
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        link = soup.select_one("a[href*='/content/'], a[href*='/viewer']")
-        if link and link.get("href"):
-            return urljoin(KIWIX_BASE, link["href"])
-    except requests.RequestException as e:
-        log.warning("Kiwix /search failed: %s", e)
+def kiwix_search_articles(query: str, count: int = 5) -> list[dict[str, str]]:
+    """Search across ALL Kiwix books and return top candidate URLs with snippets.
 
-    return None
+    Automatically expands abbreviations and deduplicates results.
+    """
+    seen_urls: set[str] = set()
+    candidates: list[dict[str, str]] = []
+
+    for search_term in _expand_query(query):
+        try:
+            r = requests.get(
+                f"{KIWIX_BASE}/search",
+                params={"pattern": search_term, "pageLength": count},
+                timeout=HTTP_TIMEOUT,
+            )
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            for item in soup.select("article") or soup.select(".results li"):
+                link = item.select_one("a[href*='/content/']")
+                if not link:
+                    continue
+                url = urljoin(KIWIX_BASE, link["href"])
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+                title = link.get_text(strip=True)
+                cite = item.select_one("cite")
+                snippet = cite.get_text(strip=True) if cite else ""
+
+                parts = link["href"].split("/")
+                book = parts[2] if len(parts) > 2 else "unknown"
+                candidates.append({
+                    "title": title, "url": url,
+                    "book": book, "snippet": snippet,
+                })
+        except requests.RequestException as e:
+            log.warning("Kiwix search failed for '%s': %s", search_term, e)
+
+    if VERBOSE:
+        log.info("Search for '%s' → %d candidates", query, len(candidates))
+    return candidates[:count]
 
 
 def fetch_and_clean_article(url: str) -> str:
     r = requests.get(url, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
-    for tag in soup(["script", "style", "table", "figure", "sup",
-                     "noscript", "nav", "header", "footer", "aside"]):
+    
+    # Aggressive cleaning for performance
+    for tag in soup(["script", "style", "table", "figure", "sup", "noscript", 
+                     "nav", "header", "footer", "aside", "form", "button", 
+                     "iframe", "meta", "link", "img"]):
         tag.decompose()
+    
+    # Specifically target common sidebar/infobox classes
+    for cls in ["infobox", "sidebar", "navbox", "reflist", "metadata", "ambox", "toc"]:
+        for el in soup.find_all(class_=re.compile(cls)):
+            el.decompose()
+
     main = soup.find("main") or soup.find(id="mw-content-text") or soup.body or soup
     paragraphs = [p.get_text(" ", strip=True) for p in main.find_all("p")]
-    text = " ".join(p for p in paragraphs if p)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = "\n\n".join(p for p in paragraphs if p)
+    
     text = re.sub(r"\[\d+\]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    
     words = text.split()
-    if len(words) > MAX_CONTEXT_WORDS:
-        text = " ".join(words[:MAX_CONTEXT_WORDS]) + "…"
+    if len(words) > 1000:
+        text = " ".join(words[:1000]) + "…"
     return text
 
 
@@ -689,59 +748,147 @@ def ask():
     payload = request.get_json(silent=True) or {}
     query = (payload.get("query") or "").strip()
     history: list[dict[str, str]] = payload.get("history") or []
+    # Frontend can send the last source URL so follow-ups reuse it.
+    last_source: str | None = payload.get("last_source")
 
     if not query:
         return jsonify({"ok": False, "error": "Empty query."}), 400
     if len(query) > 500:
         return jsonify({"ok": False, "error": "Query too long (max 500 chars)."}), 400
-    # Cap history to last 10 turns to keep context window manageable.
-    history = history[-10:]
 
-    log.info("Query: %s (history: %d turns)", query, len(history))
+    def generate():
+        trimmed_history = history[-10:]
+        log.info("Query: %s (history: %d turns)", query, len(trimmed_history))
 
-    # RAG lookup — search Kiwix using the latest user query.
-    try:
-        article_url = kiwix_top_article_url(query)
-    except Exception as e:  # pragma: no cover — defensive
-        log.exception("Kiwix lookup crashed: %s", e)
-        return jsonify({"ok": False,
-                        "error": "Kiwix lookup failed. Is ark-kiwix running?"}), 502
+        # ------------------------------------------------------------------
+        # Follow-up detection: if there's conversation history AND the
+        # frontend sent the last source URL, reuse that article's context
+        # instead of searching again.  This saves minutes of search + fetch.
+        # ------------------------------------------------------------------
+        context = None
+        source_url = None
 
-    if not article_url:
-        return jsonify({"ok": False,
-                        "error": "No matching Wikipedia article found."}), 404
+        if trimmed_history and last_source:
+            yield json.dumps({"type": "status", "message": "Using previous article for follow-up..."}) + "\n"
+            try:
+                context = fetch_and_clean_article(last_source)
+                source_url = last_source
+                log.info("Follow-up: reusing source %s", last_source)
+            except Exception as e:
+                log.warning("Could not re-fetch last source: %s", e)
+                # Fall through to fresh search.
 
-    try:
-        context = fetch_and_clean_article(article_url)
-    except requests.RequestException as e:
-        log.warning("Article fetch failed: %s", e)
-        return jsonify({"ok": False,
-                        "error": "Could not fetch the article from Kiwix."}), 502
+        # ------------------------------------------------------------------
+        # Fresh search: search ALL Kiwix books (Wikipedia, iFixit, WikiMed…)
+        # ------------------------------------------------------------------
+        if context is None:
+            yield json.dumps({"type": "status", "message": "Searching offline archives..."}) + "\n"
+            candidates = kiwix_search_articles(query, count=5)
 
-    if not context:
-        return jsonify({"ok": False,
-                        "error": "Found an article but it had no readable text."}), 502
+            if not candidates:
+                yield json.dumps({
+                    "ok": False, "type": "result",
+                    "error": "No articles found in any archive. Try different keywords.",
+                }) + "\n"
+                return
 
-    # Build conversation: prior history + new user message.
-    messages = list(history) + [{"role": "user", "content": query}]
+            # Try candidates in order — NO router LLM call (saves minutes).
+            # Only move to the next candidate if the LLM says IRRELEVANT.
+            for i, cand in enumerate(candidates):
+                yield json.dumps({
+                    "type": "status",
+                    "message": f"Reading: {cand['title']}…",
+                }) + "\n"
 
-    try:
-        answer = ask_llm(context, messages)
-    except requests.RequestException as e:
-        log.warning("LLM call failed: %s", e)
-        return jsonify({"ok": False,
-                        "error": "Local LLM is not responding. Is llama.cpp running?"}), 502
+                try:
+                    text = fetch_and_clean_article(cand["url"])
+                except Exception as e:
+                    log.warning("Article fetch failed (%s): %s", cand["title"], e)
+                    continue
 
-    if not answer:
-        return jsonify({"ok": False, "error": "LLM returned an empty answer."}), 502
+                if not text or len(text) < 80:
+                    log.info("Article too short, skipping: %s", cand["title"])
+                    continue
 
-    return jsonify({
-        "ok": True,
-        "answer": answer,
-        "source": article_url,
-        "model": LLM_MODEL,
-        "context_preview": html.escape(context[:280]) + ("…" if len(context) > 280 else ""),
-    })
+                # First candidate with real content — use it.
+                context = text
+                source_url = cand["url"]
+                log.info("Using article: %s (from %s)", cand["title"], cand["book"])
+                break
+
+        if context is None:
+            yield json.dumps({
+                "ok": False, "type": "result",
+                "error": "Found articles but none had usable content.",
+            }) + "\n"
+            return
+
+        # ------------------------------------------------------------------
+        # LLM inference — single call with the chosen article context.
+        # ------------------------------------------------------------------
+        yield json.dumps({"type": "status", "message": "Generating answer..."}) + "\n"
+
+        messages = list(trimmed_history) + [{"role": "user", "content": query}]
+        try:
+            answer = ask_llm(context, messages)
+        except requests.RequestException as e:
+            log.warning("LLM call failed: %s", e)
+            yield json.dumps({
+                "ok": False, "type": "result",
+                "error": "Local LLM is not responding. Is llama.cpp running?",
+            }) + "\n"
+            return
+
+        # If the LLM rejected this article, try the NEXT candidate (one retry only).
+        if "IRRELEVANT_ARTICLE" in answer and not last_source:
+            log.info("LLM rejected article, trying next candidate...")
+            # We already consumed some candidates above; search again for fallback.
+            fallback_candidates = kiwix_search_articles(query, count=5)
+            for cand in fallback_candidates:
+                if cand["url"] == source_url:
+                    continue  # skip the one we already tried
+                yield json.dumps({
+                    "type": "status",
+                    "message": f"Trying: {cand['title']}…",
+                }) + "\n"
+                try:
+                    alt_context = fetch_and_clean_article(cand["url"])
+                    if not alt_context or len(alt_context) < 80:
+                        continue
+                    alt_answer = ask_llm(alt_context, messages)
+                    if "IRRELEVANT_ARTICLE" not in alt_answer:
+                        answer = alt_answer
+                        source_url = cand["url"]
+                        context = alt_context
+                        break
+                except Exception:
+                    continue
+
+        # Still irrelevant after retry? Give a helpful message, not "try rephrasing".
+        if "IRRELEVANT_ARTICLE" in answer:
+            answer = (
+                "I found some articles but none were directly relevant to your "
+                "question. Try asking with different keywords, or browse the "
+                "archives directly for the topic you need."
+            )
+            source_url = None
+
+        if not answer:
+            yield json.dumps({
+                "ok": False, "type": "result",
+                "error": "LLM returned an empty answer.",
+            }) + "\n"
+            return
+
+        yield json.dumps({
+            "ok": True,
+            "type": "result",
+            "answer": answer,
+            "source": source_url,
+            "model": LLM_MODEL,
+        }) + "\n"
+
+    return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
 
 
 @app.route("/api/search", methods=["POST"])
