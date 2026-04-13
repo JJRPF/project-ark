@@ -66,8 +66,31 @@ SYSTEM_PROMPT = (
     "Cite which article you used at the end of your answer."
 )
 
-# Common abbreviations/slang → expanded search terms for Kiwix lookup.
-# We search BOTH the original query AND the expanded version.
+# ---------------------------------------------------------------------------
+# Natural-language → search-term mapping
+# ---------------------------------------------------------------------------
+# Kiwix search is keyword-based.  Users in a survival situation will type
+# natural language ("how do I set a broken arm", "my kid is choking").
+# We need to bridge the gap WITHOUT an extra LLM call (too slow on Pi).
+#
+# Strategy (all instant, no LLM):
+#   1. Strip stop words → core keywords
+#   2. Expand abbreviations (CPR → cardiopulmonary resuscitation)
+#   3. Map everyday phrases to Wikipedia article titles (concept synonyms)
+#   4. Search Kiwix with multiple query variations, merge & deduplicate
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = frozenset(
+    "a an the is are was were be been being do does did doing have has had "
+    "having i me my we our you your he she it they them his her its their "
+    "this that these those am will would shall should can could may might "
+    "must to of in for on with at by from as into through about between "
+    "how what when where why who which whom whose if then than so very "
+    "just really also still even much many some any no not don't doesn't "
+    "didn't won't can't couldn't shouldn't wouldn't get got please help "
+    "need want know think going go".split()
+)
+
 ABBREVIATIONS: dict[str, str] = {
     "cpr": "cardiopulmonary resuscitation",
     "aed": "automated external defibrillator",
@@ -85,6 +108,78 @@ ABBREVIATIONS: dict[str, str] = {
     "emp": "electromagnetic pulse",
     "mre": "meal ready to eat",
     "sop": "standard operating procedure",
+    "diy": "do it yourself repair",
+    "ac": "air conditioning",
+}
+
+# Map everyday/informal phrases to the Wikipedia (or iFixit) article titles
+# that actually contain the information.  Keys are lowercased substrings that
+# will be checked against the query; values are extra search terms injected
+# alongside the original query.
+CONCEPT_SYNONYMS: dict[str, list[str]] = {
+    # Medical / first aid
+    "broken arm":     ["fracture bone splint"],
+    "broken leg":     ["fracture bone splint"],
+    "broken bone":    ["fracture bone first aid"],
+    "sprain":         ["sprain strain first aid"],
+    "choking":        ["choking first aid heimlich"],
+    "heart attack":   ["myocardial infarction first aid"],
+    "stroke":         ["stroke cerebrovascular first aid"],
+    "bleeding":       ["hemorrhage wound first aid"],
+    "cut":            ["wound laceration first aid"],
+    "burn":           ["burn first aid treatment"],
+    "snake bite":     ["snakebite envenomation first aid"],
+    "bee sting":      ["insect sting allergy anaphylaxis"],
+    "allergic":       ["anaphylaxis allergy epinephrine"],
+    "drowning":       ["drowning rescue resuscitation"],
+    "hypothermia":    ["hypothermia cold exposure"],
+    "heat stroke":    ["heat stroke hyperthermia"],
+    "dehydration":    ["dehydration oral rehydration"],
+    "diarrhea":       ["diarrhea oral rehydration"],
+    "infection":      ["infection wound antiseptic"],
+    "fever":          ["fever antipyretic treatment"],
+    "concussion":     ["concussion traumatic brain injury"],
+    "tourniquet":     ["tourniquet hemorrhage control"],
+    "stitch":         ["suture wound closure"],
+    "dislocate":      ["dislocation joint reduction"],
+    "frostbite":      ["frostbite cold injury"],
+    "poison":         ["poisoning first aid treatment"],
+    "overdose":       ["drug overdose first aid"],
+    "seizure":        ["seizure epilepsy first aid"],
+    "asthma":         ["asthma attack inhaler"],
+    "diabetic":       ["diabetic emergency hypoglycemia"],
+    "deliver a baby": ["childbirth emergency delivery"],
+    "giving birth":   ["childbirth emergency delivery"],
+    "chest pain":     ["chest pain cardiac emergency"],
+    "unconscious":    ["unconsciousness recovery position"],
+    "not breathing":  ["respiratory arrest resuscitation"],
+    "shock":          ["shock medical emergency"],
+    # Water / shelter / survival
+    "purify water":   ["water purification treatment"],
+    "clean water":    ["water purification filtration"],
+    "boil water":     ["water purification boiling"],
+    "filter water":   ["water filter purification"],
+    "start a fire":   ["fire making friction ignition"],
+    "make fire":      ["fire making survival"],
+    "shelter":        ["emergency shelter survival"],
+    "signal for help":["distress signal rescue"],
+    "lost in woods":  ["wilderness survival navigation"],
+    "compass":        ["navigation compass orientation"],
+    "edible plant":   ["foraging wild edible plants"],
+    "fishing":        ["fishing survival food"],
+    "trap":           ["trapping hunting survival"],
+    "knot":           ["knot tying rope"],
+    "rope":           ["knot rope cordage"],
+    # Repair / tech
+    "phone screen":   ["screen replacement repair"],
+    "cracked screen": ["screen replacement repair"],
+    "flat tire":      ["tire repair puncture"],
+    "car won't start":["automobile troubleshooting battery"],
+    "generator":      ["electric generator portable"],
+    "solar panel":    ["solar panel photovoltaic"],
+    "battery":        ["battery charging maintenance"],
+    "radio":          ["radio communication emergency"],
+    "sewing":         ["sewing repair textile"],
 }
 
 # Curated offline content catalog. `kiwix_name` + `kiwix_flavour` are used
@@ -601,19 +696,46 @@ def get_book_name() -> str | None:
 
 
 def _expand_query(query: str) -> list[str]:
-    """Return a list of search queries: original + abbreviation expansions."""
-    queries = [query]
+    """Generate multiple search queries from natural language.
+
+    Returns a list of search strings to try against Kiwix, ordered from
+    most specific to most general.  No LLM call — all instant.
+    """
     lower = query.lower().strip()
-    # Check if any word in the query is a known abbreviation.
+    queries: list[str] = []
+
+    # 1. Original query as-is (sometimes it just works).
+    queries.append(query)
+
+    # 2. Abbreviation expansion.
     for abbr, expansion in ABBREVIATIONS.items():
-        # Match whole-word abbreviations.
         if re.search(rf'\b{re.escape(abbr)}\b', lower):
-            expanded = re.sub(
-                rf'\b{re.escape(abbr)}\b', expansion, lower, flags=re.IGNORECASE
-            )
-            queries.append(expanded)
-            break  # one expansion is enough
-    return queries
+            queries.append(re.sub(
+                rf'\b{re.escape(abbr)}\b', expansion, lower, flags=re.IGNORECASE,
+            ))
+
+    # 3. Concept synonym injection — if the query contains a known phrase,
+    #    add the Wikipedia-friendly search terms.
+    for phrase, extra_terms in CONCEPT_SYNONYMS.items():
+        if phrase in lower:
+            for term in extra_terms:
+                queries.append(term)
+
+    # 4. Stop-word-stripped keywords (catches the long-tail).
+    words = re.findall(r"[a-z0-9]+(?:'[a-z]+)?", lower)
+    keywords = [w for w in words if w not in _STOP_WORDS and len(w) > 1]
+    if keywords and len(keywords) < len(words):  # only if we actually stripped something
+        queries.append(" ".join(keywords))
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for q in queries:
+        q_key = q.strip().lower()
+        if q_key and q_key not in seen:
+            seen.add(q_key)
+            unique.append(q.strip())
+    return unique
 
 
 def kiwix_search_articles(query: str, count: int = 5) -> list[dict[str, str]]:
@@ -688,6 +810,37 @@ def fetch_and_clean_article(url: str) -> str:
     if len(words) > 1000:
         text = " ".join(words[:1000]) + "…"
     return text
+
+
+def _llm_suggest_search(query: str) -> str | None:
+    """Ask the LLM for a Wikipedia article title to search.
+
+    ONLY used as a last resort when all instant search strategies fail.
+    Constrained to very short output to minimize latency.
+    """
+    payload = {
+        "model":       LLM_MODEL,
+        "messages":    [
+            {"role": "system", "content": (
+                "You help find Wikipedia articles. Given the user's question, "
+                "respond with ONLY the most likely Wikipedia article title that "
+                "would answer it. One title, nothing else. Examples:\n"
+                "Q: 'my kid swallowed bleach' → 'Poisoning'\n"
+                "Q: 'how to CPR' → 'Cardiopulmonary resuscitation'\n"
+                "Q: 'fix iphone screen' → 'IPhone screen replacement'"
+            )},
+            {"role": "user", "content": query},
+        ],
+        "temperature": 0.0,
+        "max_tokens":  30,
+    }
+    r = requests.post(f"{LLM_BASE}/v1/chat/completions",
+                      json=payload, timeout=(5, 120))
+    r.raise_for_status()
+    data = r.json()
+    choice = (data.get("choices") or [{}])[0]
+    title = choice.get("message", {}).get("content", "").strip().strip("'\"")
+    return title if title else None
 
 
 def ask_llm(context: str, history: list[dict[str, str]]) -> str:
@@ -780,37 +933,50 @@ def ask():
 
         # ------------------------------------------------------------------
         # Fresh search: search ALL Kiwix books (Wikipedia, iFixit, WikiMed…)
+        # _expand_query handles abbreviations, concept synonyms, stop-word
+        # stripping — all instant, no LLM needed.
         # ------------------------------------------------------------------
         if context is None:
             yield json.dumps({"type": "status", "message": "Searching offline archives..."}) + "\n"
             candidates = kiwix_search_articles(query, count=5)
 
+            # Last resort: if the smart search found nothing, ask the LLM
+            # to suggest a Wikipedia article title.  This is slow but beats
+            # returning nothing in a survival situation.
+            if not candidates:
+                yield json.dumps({"type": "status", "message": "Trying alternate search..."}) + "\n"
+                try:
+                    llm_terms = _llm_suggest_search(query)
+                    if llm_terms:
+                        log.info("LLM suggested search: %s", llm_terms)
+                        candidates = kiwix_search_articles(llm_terms, count=5)
+                except Exception as e:
+                    log.warning("LLM search suggestion failed: %s", e)
+
             if not candidates:
                 yield json.dumps({
                     "ok": False, "type": "result",
-                    "error": "No articles found in any archive. Try different keywords.",
+                    "error": (
+                        "No articles found in any archive. "
+                        "You can browse the archives directly using the link above."
+                    ),
                 }) + "\n"
                 return
 
-            # Try candidates in order — NO router LLM call (saves minutes).
-            # Only move to the next candidate if the LLM says IRRELEVANT.
-            for i, cand in enumerate(candidates):
+            # Try candidates in order.  Pick the first with real content.
+            for cand in candidates:
                 yield json.dumps({
                     "type": "status",
                     "message": f"Reading: {cand['title']}…",
                 }) + "\n"
-
                 try:
                     text = fetch_and_clean_article(cand["url"])
                 except Exception as e:
                     log.warning("Article fetch failed (%s): %s", cand["title"], e)
                     continue
-
                 if not text or len(text) < 80:
                     log.info("Article too short, skipping: %s", cand["title"])
                     continue
-
-                # First candidate with real content — use it.
                 context = text
                 source_url = cand["url"]
                 log.info("Using article: %s (from %s)", cand["title"], cand["book"])
@@ -864,12 +1030,14 @@ def ask():
                 except Exception:
                     continue
 
-        # Still irrelevant after retry? Give a helpful message, not "try rephrasing".
+        # Still irrelevant after retry?
         if "IRRELEVANT_ARTICLE" in answer:
             answer = (
-                "I found some articles but none were directly relevant to your "
-                "question. Try asking with different keywords, or browse the "
-                "archives directly for the topic you need."
+                "I couldn't find an article that directly answers your question "
+                "in the offline archives. You can try:\n"
+                "- Asking in a slightly different way\n"
+                "- Browsing the archives directly using the link at the top\n"
+                "- Checking if the right content pack is installed (admin panel)"
             )
             source_url = None
 
