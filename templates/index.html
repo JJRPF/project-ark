@@ -161,11 +161,25 @@
 
       const thinking = addThinking();
 
+      // Detect if user pasted a Kiwix article URL — use it as source.
+      let sourceUrl = null;
+      let actualQuery = q;
+      const urlMatch = q.match(/(https?:\/\/[^\s]+)/);
+      if (urlMatch && (urlMatch[1].includes(':8080') || urlMatch[1].includes('/content/'))) {
+        sourceUrl = urlMatch[1];
+        actualQuery = q.replace(urlMatch[0], '').trim() || 'Summarize this article';
+      }
+
       try {
         const resp = await fetch('/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q, history: history, last_source: lastSource })
+          body: JSON.stringify({
+            query: actualQuery,
+            history: history,
+            last_source: lastSource,
+            source_url: sourceUrl
+          })
         });
 
         const reader = resp.body.getReader();

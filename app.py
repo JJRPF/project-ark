@@ -390,6 +390,8 @@ def rebuild_library() -> None:
     kiwix-serve is started with --monitorLibrary, so it reloads automatically
     as soon as we replace the file.
     """
+    global _books_cache
+    _books_cache = None  # Invalidate so next search re-discovers.
     if not os.path.isdir(ZIM_DIR):
         return
     try:
@@ -667,32 +669,51 @@ def _clear_session(session_id: str) -> None:
 #   RAG pipeline
 # ======================================================================
 
-_BOOK_NAME_CACHE: str | None = None
+_books_cache: list[str] | None = None
 
 
-def _find_book_name() -> str | None:
+def _discover_books() -> list[str]:
+    """Discover all available Kiwix book names by querying the server."""
+    global _books_cache
+    if _books_cache is not None:
+        return _books_cache
+
+    books: list[str] = []
     try:
-        r = requests.get(f"{KIWIX_BASE}/search?pattern=index&pageLength=1",
+        # The Kiwix catalog endpoint lists all loaded books.
+        r = requests.get(f"{KIWIX_BASE}/catalog/v2/entries?count=100",
                          timeout=HTTP_TIMEOUT)
         r.raise_for_status()
-        m = re.search(r'/viewer#([^/"\']+)/', r.text)
-        if m:
-            return m.group(1)
-        m = re.search(r'/content/([^/"\']+)/', r.text)
-        if m:
-            return m.group(1)
-    except requests.RequestException as e:
-        log.warning("Could not auto-detect Kiwix book: %s", e)
-    return None
+        soup = BeautifulSoup(r.text, "xml")
+        for entry in soup.find_all("entry"):
+            name_tag = entry.find("name")
+            if name_tag:
+                books.append(name_tag.get_text(strip=True))
+    except Exception as e:
+        log.warning("Catalog discovery failed: %s", e)
 
+    if not books:
+        # Fallback: parse the homepage for book links.
+        try:
+            r = requests.get(KIWIX_BASE, timeout=HTTP_TIMEOUT)
+            r.raise_for_status()
+            # Look for any /viewer#BOOK/ or /content/BOOK/ patterns.
+            found = set(re.findall(r'(?:/viewer#|/content/)([^/"\'?]+)', r.text))
+            books = list(found)
+        except Exception as e:
+            log.warning("Homepage book discovery failed: %s", e)
 
-def get_book_name() -> str | None:
-    global _BOOK_NAME_CACHE
-    if _BOOK_NAME_CACHE is None:
-        _BOOK_NAME_CACHE = _find_book_name()
-        if _BOOK_NAME_CACHE:
-            log.info("Using Kiwix book: %s", _BOOK_NAME_CACHE)
-    return _BOOK_NAME_CACHE
+    if not books:
+        # Last resort: derive from ZIM filenames on disk.
+        if os.path.isdir(ZIM_DIR):
+            for fn in os.listdir(ZIM_DIR):
+                if fn.endswith(".zim"):
+                    # e.g. "wikipedia_en_all_maxi_2024-01.zim" → "wikipedia_en_all_maxi_2024-01"
+                    books.append(fn.rsplit(".", 1)[0])
+
+    _books_cache = books
+    log.info("Discovered Kiwix books: %s", books if books else "(none)")
+    return books
 
 
 def _expand_query(query: str) -> list[str]:
@@ -724,7 +745,7 @@ def _expand_query(query: str) -> list[str]:
     # 4. Stop-word-stripped keywords (catches the long-tail).
     words = re.findall(r"[a-z0-9]+(?:'[a-z]+)?", lower)
     keywords = [w for w in words if w not in _STOP_WORDS and len(w) > 1]
-    if keywords and len(keywords) < len(words):  # only if we actually stripped something
+    if keywords and len(keywords) < len(words):
         queries.append(" ".join(keywords))
 
     # Deduplicate while preserving order.
@@ -739,14 +760,51 @@ def _expand_query(query: str) -> list[str]:
 
 
 def kiwix_search_articles(query: str, count: int = 5) -> list[dict[str, str]]:
-    """Search across ALL Kiwix books and return top candidate URLs with snippets.
-
-    Automatically expands abbreviations and deduplicates results.
+    """Search across ALL Kiwix books using the /suggest JSON API (primary)
+    and /search HTML fallback.  Expands abbreviations and deduplicates.
     """
     seen_urls: set[str] = set()
     candidates: list[dict[str, str]] = []
+    books = _discover_books()
 
     for search_term in _expand_query(query):
+        if len(candidates) >= count:
+            break
+
+        # --- Strategy 1: /suggest JSON API (per-book, reliable) ----------
+        for book in books:
+            if len(candidates) >= count:
+                break
+            try:
+                r = requests.get(
+                    f"{KIWIX_BASE}/suggest",
+                    params={"term": search_term, "count": count, "content": book},
+                    timeout=HTTP_TIMEOUT,
+                )
+                r.raise_for_status()
+                data = r.json()
+                log.info("[suggest] book=%s term='%s' → %d hits",
+                         book, search_term, len(data))
+                for hit in data:
+                    path = hit.get("path") or hit.get("url") or ""
+                    label = hit.get("label") or hit.get("title") or path
+                    if not path:
+                        continue
+                    url = urljoin(KIWIX_BASE, f"/{book}/{path.lstrip('/')}")
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    candidates.append({
+                        "title": label, "url": url,
+                        "book": book, "snippet": hit.get("snippet", ""),
+                    })
+            except Exception as e:
+                log.debug("[suggest] book=%s term='%s' failed: %s",
+                          book, search_term, e)
+
+        # --- Strategy 2: /search HTML fallback (cross-book) ------
+        if len(candidates) >= count:
+            break
         try:
             r = requests.get(
                 f"{KIWIX_BASE}/search",
@@ -756,59 +814,97 @@ def kiwix_search_articles(query: str, count: int = 5) -> list[dict[str, str]]:
             r.raise_for_status()
             soup = BeautifulSoup(r.text, "html.parser")
 
-            for item in soup.select("article") or soup.select(".results li"):
-                link = item.select_one("a[href*='/content/']")
-                if not link:
+            # Try every <a> that links to an article (flexible selectors).
+            links_found = 0
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                # Accept /content/BOOK/..., /BOOK/..., /viewer#BOOK/...
+                if "/content/" not in href and not any(
+                    f"/{b}/" in href for b in books
+                ):
                     continue
-                url = urljoin(KIWIX_BASE, link["href"])
+                url = urljoin(KIWIX_BASE, href)
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
 
-                title = link.get_text(strip=True)
-                cite = item.select_one("cite")
+                title = link.get_text(strip=True) or href.split("/")[-1]
+                # Try to find a sibling <cite> for snippet text.
+                parent = link.parent
+                cite = parent.find("cite") if parent else None
                 snippet = cite.get_text(strip=True) if cite else ""
 
-                parts = link["href"].split("/")
-                book = parts[2] if len(parts) > 2 else "unknown"
+                book = "unknown"
+                parts = href.split("/")
+                if len(parts) >= 3:
+                    book = parts[2] if "/content/" in href else parts[1]
+
                 candidates.append({
                     "title": title, "url": url,
                     "book": book, "snippet": snippet,
                 })
-        except requests.RequestException as e:
-            log.warning("Kiwix search failed for '%s': %s", search_term, e)
+                links_found += 1
+                if len(candidates) >= count:
+                    break
 
-    if VERBOSE:
-        log.info("Search for '%s' → %d candidates", query, len(candidates))
+            log.info("[search] term='%s' → %d links found in HTML",
+                     search_term, links_found)
+
+        except requests.RequestException as e:
+            log.warning("[search] term='%s' failed: %s", search_term, e)
+
+    log.info("Total search candidates for '%s': %d", query, len(candidates))
     return candidates[:count]
 
 
 def fetch_and_clean_article(url: str) -> str:
-    r = requests.get(url, timeout=HTTP_TIMEOUT)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    
-    # Aggressive cleaning for performance
-    for tag in soup(["script", "style", "table", "figure", "sup", "noscript", 
-                     "nav", "header", "footer", "aside", "form", "button", 
-                     "iframe", "meta", "link", "img"]):
-        tag.decompose()
-    
-    # Specifically target common sidebar/infobox classes
-    for cls in ["infobox", "sidebar", "navbox", "reflist", "metadata", "ambox", "toc"]:
-        for el in soup.find_all(class_=re.compile(cls)):
-            el.decompose()
+    """Fetch a Kiwix article and extract readable text.
 
-    main = soup.find("main") or soup.find(id="mw-content-text") or soup.body or soup
-    paragraphs = [p.get_text(" ", strip=True) for p in main.find_all("p")]
-    text = "\n\n".join(p for p in paragraphs if p)
-    
-    text = re.sub(r"\[\d+\]", "", text)
+    Tries the original URL first.  Falls back less aggressively than before
+    — keeps <li>, <dd>, <section>, <h2>/<h3> headings, etc.
+    """
+    log.info("[fetch] %s", url)
+    r = requests.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
+    r.raise_for_status()
+    raw_len = len(r.text)
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # Remove only truly useless elements.
+    for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
+        tag.decompose()
+
+    # Try to find the main content area.
+    main = (
+        soup.find(id="mw-content-text")
+        or soup.find("main")
+        or soup.find(attrs={"role": "main"})
+        or soup.find("article")
+        or soup.body
+        or soup
+    )
+
+    # Extract text from paragraphs, list items, headings, and <dd> definitions.
+    text_parts: list[str] = []
+    for el in main.find_all(["p", "li", "dd", "h2", "h3", "h4", "blockquote",
+                             "figcaption", "section", "div"]):
+        t = el.get_text(" ", strip=True)
+        if t and len(t) > 15:  # skip tiny fragments
+            text_parts.append(t)
+
+    # If paragraph extraction failed, just get ALL text from main.
+    if not text_parts:
+        text_parts = [main.get_text(" ", strip=True)]
+
+    text = " ".join(text_parts)
+    text = re.sub(r"\[\d+\]", "", text)       # strip footnote markers
     text = re.sub(r"\s+", " ", text).strip()
-    
+
     words = text.split()
-    if len(words) > 1000:
-        text = " ".join(words[:1000]) + "…"
+    if len(words) > MAX_CONTEXT_WORDS:
+        text = " ".join(words[:MAX_CONTEXT_WORDS]) + "…"
+
+    log.info("[fetch] raw=%d bytes → cleaned=%d chars (%d words)",
+             raw_len, len(text), len(words))
     return text
 
 
@@ -903,6 +999,8 @@ def ask():
     history: list[dict[str, str]] = payload.get("history") or []
     # Frontend can send the last source URL so follow-ups reuse it.
     last_source: str | None = payload.get("last_source")
+    # User can specify a Kiwix article URL directly (from "browse archives").
+    user_source: str | None = payload.get("source_url")
 
     if not query:
         return jsonify({"ok": False, "error": "Empty query."}), 400
@@ -911,17 +1009,28 @@ def ask():
 
     def generate():
         trimmed_history = history[-10:]
-        log.info("Query: %s (history: %d turns)", query, len(trimmed_history))
+        log.info("=== Query: '%s' (history: %d turns, last_source: %s, user_source: %s) ===",
+                 query, len(trimmed_history), last_source, user_source)
 
-        # ------------------------------------------------------------------
-        # Follow-up detection: if there's conversation history AND the
-        # frontend sent the last source URL, reuse that article's context
-        # instead of searching again.  This saves minutes of search + fetch.
-        # ------------------------------------------------------------------
         context = None
         source_url = None
 
-        if trimmed_history and last_source:
+        # ------------------------------------------------------------------
+        # Priority 1: User-specified source URL (from browse archives link).
+        # ------------------------------------------------------------------
+        if user_source:
+            yield json.dumps({"type": "status", "message": "Loading specified article..."}) + "\n"
+            try:
+                context = fetch_and_clean_article(user_source)
+                source_url = user_source
+                log.info("Using user-specified source: %s", user_source)
+            except Exception as e:
+                log.warning("Could not fetch user-specified source: %s", e)
+
+        # ------------------------------------------------------------------
+        # Priority 2: Follow-up reuse — same article, new question.
+        # ------------------------------------------------------------------
+        if context is None and trimmed_history and last_source:
             yield json.dumps({"type": "status", "message": "Using previous article for follow-up..."}) + "\n"
             try:
                 context = fetch_and_clean_article(last_source)
@@ -929,7 +1038,6 @@ def ask():
                 log.info("Follow-up: reusing source %s", last_source)
             except Exception as e:
                 log.warning("Could not re-fetch last source: %s", e)
-                # Fall through to fresh search.
 
         # ------------------------------------------------------------------
         # Fresh search: search ALL Kiwix books (Wikipedia, iFixit, WikiMed…)
@@ -1126,6 +1234,46 @@ def api_clear_history():
 def healthz():
     return jsonify({"ok": True, "model": LLM_MODEL,
                     "kiwix": KIWIX_BASE, "data_dir": ARK_DATA_DIR})
+
+
+@app.route("/api/debug-search", methods=["POST"])
+def api_debug_search():
+    """Debug endpoint: shows exactly what the search pipeline returns.
+
+    POST {"query": "how to start a fire"}
+    Returns: expanded queries, raw candidates, article previews.
+    """
+    payload = request.get_json(silent=True) or {}
+    query = (payload.get("query") or "").strip()
+    if not query:
+        return jsonify({"ok": False, "error": "Empty query."}), 400
+
+    books = _discover_books()
+    expanded = _expand_query(query)
+    candidates = kiwix_search_articles(query, count=5)
+
+    # Try fetching the first candidate's content to show what cleaning does.
+    article_preview = None
+    if candidates:
+        try:
+            text = fetch_and_clean_article(candidates[0]["url"])
+            article_preview = {
+                "url": candidates[0]["url"],
+                "title": candidates[0]["title"],
+                "cleaned_length": len(text),
+                "first_500_chars": text[:500],
+            }
+        except Exception as e:
+            article_preview = {"error": str(e)}
+
+    return jsonify({
+        "ok": True,
+        "query": query,
+        "books_discovered": books,
+        "expanded_queries": expanded,
+        "candidates": candidates,
+        "article_preview": article_preview,
+    })
 
 
 # ======================================================================
