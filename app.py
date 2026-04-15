@@ -39,7 +39,7 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 # ---------- Config ----------
 KIWIX_BASE   = os.environ.get("ARK_KIWIX_URL", "http://127.0.0.1:8080")
 LLM_BASE     = os.environ.get("ARK_LLM_URL", "http://127.0.0.1:8001")
-LLM_MODEL    = os.environ.get("ARK_LLM_MODEL", "gemma-2-2b-it")
+LLM_MODEL    = os.environ.get("ARK_LLM_MODEL", "google/gemma-4-E2B-it")
 ARK_DATA_DIR = os.environ.get("ARK_DATA_DIR", "/mnt/ssd-ark/ark-data")
 VERBOSE      = os.environ.get("ARK_VERBOSE", "").lower() in ("1", "true", "yes")
 

@@ -40,7 +40,7 @@ Connecting clients are automatically captured into a dark-mode, mobile-first web
 1. User submits a query via the captive portal.
 2. Flask hits the local **Kiwix API** to find the best matching article.
 3. The article HTML is fetched, cleaned with BeautifulSoup, truncated to ~1,500 words.
-4. The cleaned context + user query is passed to **Ollama** (`gemma4` family) with a strict survival-assistant system prompt.
+4. The cleaned context + user query is passed to **llama.cpp** (`gemma-4` family) with a strict survival-assistant system prompt.
 5. The LLM answer is rendered in the browser as bulleted, actionable steps.
 
 ### Content pipeline (operator-facing, `/admin`)
@@ -72,7 +72,7 @@ Everything runs on the Pi. Nothing leaves the Pi during normal operation. The on
 
 - Raspberry Pi OS Lite (64-bit, Debian bookworm)
 - Python 3.11+ / Flask
-- llama.cpp + local LLM (default: `gemma-2-2b-it` GGUF; supports any GGUF model)
+- llama.cpp + local LLM (default: `google/gemma-4-E2B-it` GGUF; supports any GGUF model)
 - Kiwix-serve + kiwix-manage (ARM64) with `--monitorLibrary` auto-reload
 - Custom chunked resumable downloader + background scheduler (threaded)
 - systemd (two units: `ark-flask`, `ark-kiwix`)
@@ -100,7 +100,7 @@ The installer **does not download any `.zim` content** — it only prepares the 
 4. The installer will:
    - Print a large warning and require Y/N acknowledgement of `ROUTER_SETUP.md`.
    - Ask for the **storage location** — external SSD (recommended) or boot SD card. For SSD: enter the mount point, and if not yet mounted, the installer shows `lsblk`, lets you pick a device, mounts it, and optionally adds an `fstab` entry via `blkid` UUID.
-   - Ask which **GGUF model** to use (default: `gemma-2-2b-it`, with advanced options and custom model support).
+   - Ask which **GGUF model** to use (default: `google/gemma-4-E2B-it`, with advanced options and custom model support).
    - Update the OS and install dependencies.
    - Install Ollama, `kiwix-serve`, and `kiwix-manage` (ARM64).
    - Create `${MOUNT}/ark-data/{zims/,library.xml,config.json}`.
@@ -187,3 +187,4 @@ ${ARK_DATA_DIR}/
 ## License
 
 MIT. Use it, fork it, deploy it, survive with it.
+t.

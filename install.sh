@@ -6,7 +6,7 @@
 # on a Raspberry Pi 5 running Raspberry Pi OS Lite (64-bit / Debian bookworm).
 #
 # Components deployed:
-#   - Ollama + local LLM (default: gemma4:4b)
+#   - llama.cpp + local LLM (default: google/gemma-4-E2B-it)
 #   - Kiwix-serve (ARM64) hosting an offline Wikipedia .zim
 #   - Flask RAG app bound to port 80 (served via systemd)
 #   - ark-kiwix.service and ark-flask.service
@@ -178,17 +178,17 @@ echo "  RAM estimates include model weights + KV cache + inference overhead."
 echo "  Pi 5 (8 GB) typically has ~5–6 GB free after OS + Kiwix + Flask."
 echo
 echo -e "  ${BOLD}Recommended:${NC}"
-echo "    1) gemma-2-2b-it (~2 GB RAM — fast, fits comfortably on 8 GB Pi)"
+echo "    1) google/gemma-4-E2B-it (~2 GB RAM — fast, fits comfortably on 8 GB Pi)"
 echo
 echo -e "  ${BOLD}Advanced:${NC}"
-echo "    2) gemma-2-9b-it (~7 GB RAM — better quality, TIGHT on 8 GB — may OOM)"
+echo "    2) google/gemma-4-E4B-it (~7 GB RAM — better quality, TIGHT on 8 GB — may OOM)"
 echo "    3) phi-2          (~4 GB RAM — Microsoft, strong reasoning)"
 echo "    4) mistral-7b     (~5 GB RAM — Mistral, fast + capable)"
 echo "    5) neural-chat-7b (~5 GB RAM — Intel, optimized)"
 echo "    6) Custom         (enter GGUF model name)"
 read -rp "Choice [1]: " model_choice
 case "${model_choice}" in
-    2) OLLAMA_MODEL="gemma-2-9b-it" ;;
+    2) OLLAMA_MODEL="google/gemma-4-E4B-it" ;;
     3) OLLAMA_MODEL="phi-2"  ;;
     4) OLLAMA_MODEL="mistral-7b" ;;
     5) OLLAMA_MODEL="neural-chat-7b" ;;
@@ -197,7 +197,7 @@ case "${model_choice}" in
         [[ -z "${custom_model}" ]] && die "Model tag cannot be empty."
         OLLAMA_MODEL="${custom_model}"
         ;;
-    *) OLLAMA_MODEL="gemma-2-2b-it" ;;
+    *) OLLAMA_MODEL="google/gemma-4-E2B-it" ;;
 esac
 ok "Using model: ${OLLAMA_MODEL}"
 echo
